@@ -48,12 +48,13 @@ final class BrowserBridge: @unchecked Sendable {
     private var lastURL: String?
     private var lastBrowser: String?
     private var pageKey: String?
+    private var refreshFailed = false // the last setComments didn't come back "ok": send it again on the next poll
     private lazy var overlaySource = Self.loadOverlay()
     private var drainScripts: [String: NSAppleScript] = [:]
     private var lastError = "" // last AppleScript error, for the log when capture can't start
 
     private static let drainJS =
-        "window.__annot ? JSON.stringify({e: window.__annot.drain(), busy: window.__annot.busy(), url: location.href}) : 'missing'"
+        "window.__annot ? JSON.stringify({e: window.__annot.drain(), busy: window.__annot.busy(), url: location.href, synced: window.__annot.synced ? window.__annot.synced() : true}) : 'missing'"
 
     // MARK: lifecycle
 
@@ -85,13 +86,13 @@ final class BrowserBridge: @unchecked Sendable {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return 2.0 }
         let url = obj["url"] as? String ?? ""
         let events = obj["e"] as? [[String: Any]] ?? []
-        if url != lastURL || browser.bundleID != lastBrowser {
-            lastURL = url
-            lastBrowser = browser.bundleID
-            let announces = events.contains { ["ready", "navigate"].contains($0["type"] as? String ?? "") }
-            if !announces { refresh(url, in: browser) } // tab or browser switch
-        }
+        // A tab or browser switch, a new page, or comments that never reached the overlay: Arc times out right after
+        // a navigation, and a script it timed out on may still run there with its result lost (a `ready`, a setComments).
+        let stale = url != lastURL || browser.bundleID != lastBrowser || obj["synced"] as? Bool == false || refreshFailed
+        lastURL = url
+        lastBrowser = browser.bundleID
         for e in events { handle(e, from: browser) } // BR-2
+        if stale { refresh(url, in: browser) }
         return (obj["busy"] as? Bool ?? false) ? 0.3 : 2.0
     }
 
@@ -108,13 +109,8 @@ final class BrowserBridge: @unchecked Sendable {
 
     private func handle(_ e: [String: Any], from browser: Browser) {
         guard let type = e["type"] as? String else { return }
-        let url = e["url"] as? String ?? lastURL ?? ""
         let store = CommentStore.shared
         switch type {
-        case "ready", "navigate": // BR-3
-            lastURL = url
-            lastBrowser = browser.bundleID
-            refresh(url, in: browser)
         case "comment.create":
             create(e, from: browser)
         case "comment.reply":
@@ -123,7 +119,7 @@ final class BrowserBridge: @unchecked Sendable {
         case "comment.resolve":
             guard let id = e["id"] as? String else { return }
             store.setStatus(id, e["status"] as? String ?? "resolved")
-        default: // capture.cancel
+        default: // ready, navigate (BR-3: the overlay isn't synced for the new page, tick refreshes it), capture.cancel
             break
         }
         // Store changes come back through commentsChanged(pageKey:) and refresh the tab.
@@ -164,7 +160,9 @@ final class BrowserBridge: @unchecked Sendable {
         let list = CommentStore.shared.comments(forURL: url).map(\.dict)
         guard let listJSON = Self.json(list), let urlJSON = Self.json(url),
               let opts = Self.json(["author": Settings.authorName]) else { return }
-        _ = run("window.__annot ? window.__annot.setComments(\(listJSON), \(urlJSON), \(opts)) : 'missing'", in: browser)
+        let r = run("window.__annot ? window.__annot.setComments(\(listJSON), \(urlJSON), \(opts)) : 'missing'", in: browser)
+        refreshFailed = r != "ok"
+        if refreshFailed { bridgeLog.notice("comments for \(url, privacy: .public) not delivered: \(r ?? self.lastError, privacy: .public)") }
     }
 
     /// A comment changed in the store (from the page, a native capture or the Comments window).

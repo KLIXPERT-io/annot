@@ -1,7 +1,7 @@
 /* ANNOT — page overlay.
    Injected into the active Chrome tab by the Mac app (AppleScript `execute javascript`).
    No network requests, no innerHTML, styles isolated in a closed shadow root (OV-11, OV-12).
-   Bridge API: window.__annot.{drain, busy, setComments, startCapture, stopCapture, stats} */
+   Bridge API: window.__annot.{drain, busy, synced, setComments, startCapture, stopCapture, stats} */
 (function () {
   'use strict';
   if (window.__annot && window.__annot.alive) return 'alive'; // OV-1
@@ -26,6 +26,7 @@
   let openId = null;
   let hoverEl = null;
   let lastHref = location.href;
+  let syncedKey = null; // the page the bridge last gave us comments for
   const mouse = { x: -1, y: -1 };
   const entries = new Map(); // comment id -> { c, el, status, node, x, y, visible, born }
   const stats = { searches: 0, layouts: 0, pinsCreated: 0 };
@@ -728,6 +729,7 @@ textarea::placeholder{color:#a3a3a3}
     for (const e of entries.values()) paint(e);
     if (mode === 'thread' && entries.has(openId)) fillThread(entries.get(openId));
     scheduleLayout();
+    syncedKey = pageKey(location.href);
     return 'ok';
   }
 
@@ -800,6 +802,8 @@ textarea::placeholder{color:#a3a3a3}
     version: 1,
     drain() { checkUrl(); const q = queue; queue = []; return q; },
     busy: () => mode !== 'idle',
+    // false until setComments reached us for this page: the bridge sends them again (a lost Apple Event, BR-3)
+    synced: () => syncedKey === pageKey(location.href),
     setComments,
     startCapture,
     stopCapture() { if (mode === 'capture' || mode === 'compose') endCapture(true); return 'ok'; },
