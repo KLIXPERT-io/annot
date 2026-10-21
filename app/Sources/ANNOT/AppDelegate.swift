@@ -38,6 +38,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(item("Settings…", #selector(showSettings), key: ","))
         updateItem.target = Updater.shared
         menu.addItem(updateItem)
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = NSMenuItem(title: "Version \(info["CFBundleShortVersionString"] as? String ?? "?") (\(info["CFBundleVersion"] as? String ?? "?"))",
+                                 action: nil, keyEquivalent: "")
+        version.isEnabled = false
+        menu.addItem(version)
         menu.addItem(.separator())
         menu.addItem(item("Quit ANNOT", #selector(quit), key: "q"))
         statusItem.menu = menu
