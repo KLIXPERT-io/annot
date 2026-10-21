@@ -12,6 +12,14 @@
 
 Download `ANNOT-x.y.z.zip` from the [latest release](https://github.com/KLIXPERT-io/annot/releases/latest), unzip it and move **ANNOT.app** to Applications. ANNOT then updates itself: it checks once a day and shows **Update Available…** in its menu (or use **Check for Updates…**).
 
+The app isn't notarized yet, so macOS blocks the first launch once:
+
+- **macOS 15 and later:** open ANNOT, click **Done** on *“ANNOT” Not Opened*, then go to **System Settings › Privacy & Security**, scroll down to *“ANNOT” was blocked…*, click **Open Anyway**, confirm with your password or Touch ID, and click **Open**.
+- **macOS 14:** right-click ANNOT › **Open** › **Open**.
+- **Or in Terminal:** `xattr -dr com.apple.quarantine /Applications/ANNOT.app`
+
+Updates don't ask again.
+
 ## Build it
 
 ```bash
