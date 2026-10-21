@@ -6,7 +6,7 @@ struct Comment: Identifiable {
         var author: String
         var text: String
         var createdAt: Date
-        var remoteID: String? // Rome comment ID; "note" when it went into the note body
+        var remoteID: String? // Rome comment ID, or its metafield (annot.reply.…) while in Triage; "note": only in the note body
     }
 
     var id: String
@@ -23,6 +23,7 @@ struct Comment: Identifiable {
     var annotatedScreenshot: String? // the screenshot with them baked in
     var replies: [Reply] = []
     var ticket: TicketLink? // sent to Rome
+    var remote = false // made on another Mac, mirrored from Rome: replies and Resolve sync, the rest is its author's
     let pageKey: String? // web comments only
 
     var isOpen: Bool { status == "open" }
@@ -74,6 +75,7 @@ struct Comment: Identifiable {
         d["annotated_screenshot_path"] = annotatedScreenshot
         d["ticket"] = ticket?.dict
         d["details"] = details.isEmpty ? nil : details
+        d["remote"] = remote ? true : nil
         return d
     }
 
@@ -90,6 +92,7 @@ struct Comment: Identifiable {
                   annotatedScreenshot: d["annotated_screenshot_path"] as? String, replies: replies,
                   ticket: TicketLink(dict: d["ticket"] as? [String: Any]))
         details = d["details"] as? String ?? ""
+        remote = d["remote"] as? Bool ?? false
     }
 }
 
@@ -155,6 +158,19 @@ final class CommentStore: ObservableObject, @unchecked Sendable {
         }
         publish(c.pageKey)
         return c
+    }
+
+    /// A comment from another Mac, found in Rome. false if it's here already.
+    @discardableResult
+    func addRemote(_ c: Comment) -> Bool {
+        let added: Bool = lock.withLock {
+            guard items[c.id] == nil else { return false }
+            items[c.id] = c
+            save(c)
+            return true
+        }
+        if added { publish(c.pageKey) }
+        return added
     }
 
     func reply(_ id: String, text: String) {

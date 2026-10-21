@@ -6,7 +6,6 @@ import SwiftUI
 /// counts as onboarded.
 final class SetupWindowController: NSWindowController, NSWindowDelegate {
     var onConnectRome: (() -> Void)?
-    var onAccessibilityGranted: (() -> Void)?
     private let model = SetupModel()
 
     init() {
@@ -26,7 +25,6 @@ final class SetupWindowController: NSWindowController, NSWindowDelegate {
         w.delegate = self
         w.center()
         model.onProgress = { [weak self] new, step in
-            if new.contains("accessibility") { self?.onAccessibilityGranted?() }
             // Just done in System Settings or the browser: bring the guide back, without taking the keyboard.
             if new.contains(where: { $0.hasPrefix("\(step)") }), let w = self?.window, w.isVisible, !w.isKeyWindow {
                 w.orderFrontRegardless()

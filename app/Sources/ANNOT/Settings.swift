@@ -41,9 +41,21 @@ final class Settings: ObservableObject {
     /// The project new comments go to, from any thread.
     static var ticketsProjectKey: String? { d.string(forKey: "ticketsProject") }
 
-    /// A pick in a comment box becomes the default for the next comment. From any thread.
-    static func chooseProject(_ key: String?) {
-        DispatchQueue.main.async { if shared.ticketsProject != key { shared.ticketsProject = key } }
+    /// The project last picked at a site or app (see `ProjectChoices.place`); "" kept it on this Mac. From any thread.
+    static func lastPick(at place: String) -> String? { (d.dictionary(forKey: "projectPicks") as? [String: String])?[place] }
+
+    /// A pick in a comment box: remembered for its site or app, and the default for places without one yet.
+    /// Not where a project's domains decide: a different pick there is a one-off. From any thread.
+    static func chooseProject(_ key: String?, at place: String?) {
+        if let place, Tickets.choices.match(place) != nil { return }
+        DispatchQueue.main.async {
+            if let place {
+                var picks = d.dictionary(forKey: "projectPicks") as? [String: String] ?? [:]
+                picks[place] = key ?? ""
+                d.set(picks, forKey: "projectPicks")
+            }
+            if shared.ticketsProject != key { shared.ticketsProject = key }
+        }
     }
 
     static var authorName: String {

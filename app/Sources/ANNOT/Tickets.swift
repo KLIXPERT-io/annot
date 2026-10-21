@@ -19,6 +19,7 @@ struct TicketLink {
     var syncedDetails: String?
     var detailsCommentID: String?
     var detailsCommentVersion: Int?
+    var shared = false // the comment's fields are in Rome's metafields, where the other Macs read them
     var error: String?
 
     /// The note became its own issue, so resolving the comment closes it.
@@ -36,6 +37,7 @@ struct TicketLink {
         d["synced_details"] = syncedDetails
         d["details_comment_id"] = detailsCommentID
         d["details_comment_version"] = detailsCommentVersion
+        d["shared"] = shared ? true : nil
         d["error"] = error
         return d
     }
@@ -56,6 +58,7 @@ struct TicketLink {
         syncedDetails = d["synced_details"] as? String
         detailsCommentID = d["details_comment_id"] as? String
         detailsCommentVersion = d["details_comment_version"] as? Int
+        shared = d["shared"] as? Bool ?? false
         error = d["error"] as? String
     }
 
@@ -228,6 +231,7 @@ final class Tickets: ObservableObject {
         let key: String
         let name: String
         let role: String? // yours in the project: "Admin", "Member"…
+        var domains: [String] = [] // the sites it's about, set in Rome: "acme.com", "*.acme.com"
         var people: [Person] = [] // who can be @mentioned: everyone who can browse the project
         var id: String { key }
     }
@@ -288,7 +292,7 @@ final class Tickets: ObservableObject {
 
     private init() {
         socket.onEvent = { [weak self] in self?.handle($0) }
-        socket.onResync = { [weak self] in Task { await self?.syncAll() } }
+        socket.onResync = { [weak self] in Task { await self?.syncAll(); await self?.importAll() } }
         socket.onLive = { [weak self] in self?.live = $0 }
         socket.onAuthFailed = { [weak self] in self?.reject("The token was rejected. It may have been revoked or have expired") }
         Settings.shared.$ticketsProject.dropFirst().receive(on: DispatchQueue.main)
@@ -367,6 +371,13 @@ final class Tickets: ObservableObject {
         }
     }
 
+    private var loadedAt = Date.distantPast
+
+    /// Comment mode is starting: projects (and their domains) older than 10 minutes load again for the next comment.
+    func refreshIfStale() {
+        if Date().timeIntervalSince(loadedAt) > 600 { Task { await refresh() } }
+    }
+
     /// The saved token stopped working: keep it until a new one replaces it, but stop syncing with it.
     private func reject(_ message: String) {
         rejected = true
@@ -410,8 +421,10 @@ final class Tickets: ObservableObject {
             let viewer = p["viewer"] as? [String: Any]
             guard p["archived"] as? Bool != true, let key = p["key"] as? String,
                   (viewer?["permissions"] as? [String])?.contains("CREATE_NOTE") ?? true else { return nil }
-            return Project(key: key, name: p["name"] as? String ?? key, role: (viewer?["role"] as? [String: Any])?["name"] as? String)
+            return Project(key: key, name: p["name"] as? String ?? key, role: (viewer?["role"] as? [String: Any])?["name"] as? String,
+                           domains: (p["domains"] as? [String] ?? []).map { $0.lowercased() })
         }
+        loadedAt = Date()
         projects = list
         for i in list.indices {
             guard let page = try? await c.call("GET", "/principals?project=\(list[i].key)&limit=200") else { continue }
@@ -421,13 +434,15 @@ final class Tickets: ObservableObject {
             }
         }
         projects = list
+        Task { await importAll() }
     }
 
     // MARK: live updates
 
-    /// One topic per project that has sent comments, plus the one new comments go to.
+    /// One topic per project: comments from the other Macs can come from any of them.
     private func updateSocket() {
         var keys = Set(CommentStore.shared.snapshot.compactMap { $0.ticket?.noteID != nil ? $0.ticket?.project : nil })
+        keys.formUnion(projects.map(\.key))
         if let p = Settings.shared.ticketsProject { keys.insert(p) }
         socket.configure(server: Rome.server, token: account != nil ? token : nil,
                          topics: Set(keys.map { "project:" + $0 }))
@@ -435,6 +450,7 @@ final class Tickets: ObservableObject {
 
     /// An event names a note or an issue; re-sync the comments linked to it.
     private func handle(_ e: [String: Any]) {
+        if (e["type"] as? String)?.hasPrefix("project.") == true { Task { await refresh() } } // e.g. its domains changed
         let data = e["data"] as? [String: Any] ?? [:], entity = e["entity"] as? [String: Any] ?? [:]
         func key(_ o: Any?) -> String? { (o as? [String: Any])?["key"] as? String }
         var notes = Set<String>(), issues = Set<String>()
@@ -446,10 +462,15 @@ final class Tickets: ObservableObject {
         for k in [entity["key"] as? String, key(data["issue"]), key((data["comment"] as? [String: Any])?["issue"])] {
             if let k { issues.insert(k) }
         }
+        var known = Set<String>()
         for c in CommentStore.shared.snapshot {
             guard let t = c.ticket else { continue }
+            if let n = t.noteID { known.insert(n) }
             if t.noteID.map(notes.contains) == true || t.issueKey.map(issues.contains) == true { scheduleSync(c.id) }
         }
+        // New here: a comment from another Mac, or one whose closed issue was reopened.
+        let closed = Self.closed
+        for n in notes.subtracting(known).union(issues.compactMap { closed[$0] }) { Task { await importNote(id: n) } }
     }
 
     /// Coalesces a burst of events (e.g. a transition with a comment) into one sync.
@@ -460,6 +481,78 @@ final class Tickets: ObservableObject {
             scheduled.remove(id)
             await sync(id)
         }
+    }
+
+    // MARK: comments from the other Macs
+
+    private var importing: Set<String> = [] // note IDs
+
+    /// Issue key → note ID of ANNOT comments whose issue was done when we found them: not fetched again on each
+    /// import, only when the issue changes (it may be reopened).
+    private static var closed: [String: String] {
+        get { UserDefaults.standard.dictionary(forKey: "romeClosed") as? [String: String] ?? [:] }
+        set { UserDefaults.standard.set(newValue, forKey: "romeClosed") }
+    }
+
+    /// Every open ANNOT comment in your projects, from any Mac: notes in Triage and the issues they became.
+    /// After loading the projects and after missed events; the WebSocket brings the new ones in between.
+    /// Ours sent before ANNOT shared its comments get their metafields first, so the other Macs find them too.
+    func importAll() async {
+        guard let client else { return }
+        for c in CommentStore.shared.snapshot where !c.remote && c.ticket?.noteID != nil && c.ticket?.shared == false {
+            await sync(c.id)
+        }
+        for p in projects {
+            for state in ["new", "converted"] {
+                guard let notes = try? await client.list("/notes?project=\(p.key)&state=\(state)") else { continue }
+                for n in notes { await importNote(n, client) }
+            }
+        }
+    }
+
+    private func importNote(id: String) async {
+        guard let client, let n = try? await client.call("GET", "/notes/\(id)") else { return }
+        await importNote(n, client)
+    }
+
+    /// One note, if it's an ANNOT comment this Mac doesn't have and it's still open: the comment comes from its
+    /// metafields (the issue's, once triaged), then a sync brings its replies and screenshots.
+    private func importNote(_ n: [String: Any], _ client: RomeClient) async {
+        var fields = n["metafields"] as? [String: String] ?? [:]
+        guard let id = fields["annot.id"], let noteID = n["id"] as? String, CommentStore.shared.comment(id) == nil,
+              n["comment_id"] == nil, // merged into another issue: not a comment of its own anymore
+              importing.insert(noteID).inserted else { return }
+        defer { importing.remove(noteID) }
+        var link = TicketLink(project: (n["project"] as? [String: Any])?["key"] as? String ?? "")
+        apply(n, to: &link)
+        switch link.state {
+        case "new":
+            break
+        case "converted":
+            guard let key = link.issueKey, Self.closed[key] == nil || Self.closed[key] == noteID else { return }
+            guard let issue = try? await client.call("GET", "/issues/\(key)") else { return }
+            guard (issue["status"] as? [String: Any])?["category"] as? String != "done" else { Self.closed[key] = noteID; return }
+            Self.closed[key] = nil
+            fields.merge(issue["metafields"] as? [String: String] ?? [:]) { $1 }
+        default:
+            return
+        }
+        guard let anchorJSON = fields["annot.anchor"], let anchor = try? JSONSerialization.jsonObject(with: Data(anchorJSON.utf8)) as? [String: Any]
+        else { return } // sent before ANNOT shared its comments; its author's ANNOT adds the fields on its next sync
+        let author = (n["author"] as? [String: Any])?["name"] as? String ?? ""
+        var c = Comment(id: id, tempId: nil, author: fields["annot.author"] ?? author, text: fields["annot.text"] ?? n["title"] as? String ?? "",
+                        status: "open", createdAt: ISO.date(fields["annot.created"]) ?? ISO.date(n["created_at"] as? String) ?? Date(),
+                        projectID: (anchor["url"] as? String).flatMap { URL(string: $0)?.host } ?? anchor["bundle_id"] as? String, anchor: anchor)
+        c.details = fields["annot.details"] ?? ""
+        c.remote = true
+        link.shared = true
+        link.syncedStatus = "open"
+        link.remoteStatus = "open"
+        link.syncedDetails = c.details
+        c.ticket = link
+        guard CommentStore.shared.addRemote(c) else { return }
+        updateSocket()
+        await sync(id)
     }
 
     /// After missed events: re-read every linked comment.
@@ -497,13 +590,14 @@ final class Tickets: ObservableObject {
             if link.noteID == nil {
                 let res = try await client.call("POST", "/projects/\(link.project)/notes", body: c.notePayload)
                 apply(res, to: &link)
+                link.shared = true // the payload carries the metafields
                 link.syncedStatus = c.status
                 link.remoteStatus = "open"
                 link.syncedDetails = c.details
                 CommentStore.shared.setTicket(link, for: id)
-                let sent = Set(c.replies.map(\.createdAt)) // already in the note body
+                let sent = Set(c.replies.map(\.createdAt)) // already in the note body and its metafields
                 CommentStore.shared.applyRemote(id) { c in
-                    for i in c.replies.indices where c.replies[i].remoteID == nil && sent.contains(c.replies[i].createdAt) { c.replies[i].remoteID = "note" }
+                    for i in c.replies.indices where c.replies[i].remoteID == nil && sent.contains(c.replies[i].createdAt) { c.replies[i].remoteID = c.replies[i].field.key }
                     return !sent.isEmpty
                 }
                 updateSocket()
@@ -517,6 +611,10 @@ final class Tickets: ObservableObject {
             try await pushReplies(client, id, &link)
             try await pushDetails(client, id, &link)
             try await pushStatus(client, id, &link)
+            try await pushFields(client, id, &link)
+        } catch let e as RomeError where e.status == 404 && c.remote {
+            CommentStore.shared.delete(id) // deleted in Rome (a dismissed note goes after 30 days)
+            return
         } catch {
             link.error = error.localizedDescription
             if announce { HUD.show("Not sent to \(link.project): \(error.localizedDescription)", isError: true, seconds: 4) }
@@ -527,12 +625,15 @@ final class Tickets: ObservableObject {
     /// Rome → comment: the note's state, the issue's status and comments. Where both changed, Rome wins.
     private func pull(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
         guard let noteID = link.noteID else { return }
-        apply(try await client.call("GET", "/notes/\(noteID)"), to: &link)
+        let note = try await client.call("GET", "/notes/\(noteID)")
+        apply(note, to: &link)
+        var fields = note["metafields"] as? [String: String] ?? [:]
         var remote: String? = link.state == "dismissed" ? "resolved" : link.state == "new" ? "open" : nil
         if link.state == "converted", let key = link.issueKey {
             if link.ownsIssue {
                 let issue = try await client.call("GET", "/issues/\(key)")
                 remote = (issue["status"] as? [String: Any])?["category"] as? String == "done" ? "resolved" : "open"
+                fields = issue["metafields"] as? [String: String] ?? fields
             }
             let comments = try await client.list("/issues/\(key)/comments")
             if link.detailsCommentID != nil { // deleted in Rome: post a new one on the next change
@@ -540,8 +641,10 @@ final class Tickets: ObservableObject {
                 if let dc, !(dc["deleted_at"] is String) { link.detailsCommentVersion = dc["version"] as? Int ?? link.detailsCommentVersion }
                 else { link.detailsCommentID = nil; link.detailsCommentVersion = nil }
             }
-            merge(comments, into: id, skipping: [link.noteCommentID, link.detailsCommentID].compactMap { $0 })
+            merge(comments, into: id, skipping: [link.noteCommentID, link.detailsCommentID, fields["annot.details_comment"]].compactMap { $0 })
         }
+        merge(fields: fields, into: id)
+        if CommentStore.shared.comment(id)?.remote == true { try await pullFiles(client, id, &link, note: note) }
         if let remote, remote != link.remoteStatus {
             link.remoteStatus = remote
             link.syncedStatus = remote
@@ -550,6 +653,58 @@ final class Tickets: ObservableObject {
                 c.status = remote
                 return true
             }
+        }
+    }
+
+    /// Metafields → replies made in Triage (from any Mac), and for a comment from another Mac its details.
+    private func merge(fields: [String: String], into id: String) {
+        CommentStore.shared.applyRemote(id) { c in
+            var changed = false
+            for (key, value) in fields where key.hasPrefix("annot.reply.") && !c.replies.contains(where: { $0.remoteID == key }) {
+                guard let r = try? JSONSerialization.jsonObject(with: Data(value.utf8)) as? [String: String] else { continue }
+                let text = r["text"] ?? ""
+                if let i = c.replies.firstIndex(where: { $0.remoteID == nil && $0.text == text && $0.field.key == key }) {
+                    c.replies[i].remoteID = key // ours, racing the PATCH answer
+                } else {
+                    c.replies.append(.init(author: r["author"] ?? "", text: text, createdAt: ISO.date(r["at"]) ?? Date(), remoteID: key))
+                }
+                changed = true
+            }
+            if changed { c.replies.sort { $0.createdAt < $1.createdAt } }
+            if c.remote, let details = fields["annot.details"] ?? (fields["annot.id"] != nil ? "" : nil), details != c.details {
+                c.details = details
+                changed = true
+            }
+            return changed
+        }
+    }
+
+    /// The screenshots of a comment from another Mac, from the note (in Triage) or the issue: the newest
+    /// <id>.png and <id>-annotated.png, each downloaded once (link.files has "dl:<attachment ID>").
+    private func pullFiles(_ client: RomeClient, _ id: String, _ link: inout TicketLink, note: [String: Any]) async throws {
+        var files: [(id: String, name: String, download: String)] = []
+        if link.state == "new", let noteID = link.noteID {
+            for a in note["attachments"] as? [[String: Any]] ?? [] where a["state"] as? String == "ready" {
+                if let aid = a["id"] as? String { files.append((aid, a["filename"] as? String ?? "", "/notes/\(noteID)/attachments/\(aid)/download")) }
+            }
+        } else if link.state == "converted", link.ownsIssue, let key = link.issueKey {
+            for a in try await client.list("/issues/\(key)/attachments") where a["state"] as? String ?? "ready" == "ready" {
+                if let aid = a["id"] as? String { files.append((aid, a["filename"] as? String ?? "", "/attachments/\(aid)/download")) }
+            }
+        }
+        for (name, annotated) in [("\(id).png", false), ("\(id)-annotated.png", true)] {
+            guard let f = files.last(where: { $0.name == name }), !link.files.contains("dl:" + f.id),
+                  let url = URL(string: try await client.call("GET", f.download)["url"] as? String ?? "") else { continue }
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard (response as? HTTPURLResponse)?.statusCode == 200 else { continue }
+            let file = annotated ? CommentStore.annotatedURL(id) : CommentStore.screenshotsURL.appendingPathComponent(name)
+            try data.write(to: file)
+            CommentStore.shared.applyRemote(id) { c in
+                if annotated { c.annotatedScreenshot = file.path } else { c.screenshot = file.path }
+                return true
+            }
+            link.files.append("dl:" + f.id)
+            CommentStore.shared.setTicket(link, for: id)
         }
     }
 
@@ -580,7 +735,7 @@ final class Tickets: ObservableObject {
 
     /// Screenshots it doesn't have yet: to the note while it's in Triage, to the issue after.
     private func pushFiles(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
-        guard let c = CommentStore.shared.comment(id), let noteID = link.noteID else { return }
+        guard let c = CommentStore.shared.comment(id), !c.remote, let noteID = link.noteID else { return }
         do {
             for (tag, path) in pendingFiles(c, link) {
                 let file = URL(fileURLWithPath: path)
@@ -599,21 +754,32 @@ final class Tickets: ObservableObject {
         }
     }
 
-    /// Replies and details → Rome: rewrite the note body while in Triage (it shows the thread), issue comments after.
+    /// Replies and details → Rome. In Triage: each reply as a metafield (the other Macs read the thread there) and,
+    /// for our own comments, the note body rewritten to show the thread. After: issue comments.
     private func pushReplies(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
         guard let c = CommentStore.shared.comment(id), let noteID = link.noteID else { return }
         let pending = c.replies.filter { $0.remoteID == nil }
-        let detailsChanged = c.details != (link.syncedDetails ?? "")
+        let detailsChanged = !c.remote && c.details != (link.syncedDetails ?? "")
         if link.state == "new" {
             guard !pending.isEmpty || detailsChanged else { return }
-            let body = String(c.markdown(screenshotPath: false).prefix(20_000))
+            var fields: [String: Any] = Dictionary(uniqueKeysWithValues: pending.map { $0.field })
+            var patch: [String: Any] = [:]
+            if !c.remote {
+                patch["body"] = String(c.markdown(screenshotPath: false).prefix(20_000))
+                if detailsChanged { fields["annot.details"] = Comment.field(c.details) ?? NSNull() }
+            }
+            patch["metafields"] = fields
             do {
-                apply(try await client.call("PATCH", "/notes/\(noteID)", body: ["body": body, "version": link.noteVersion ?? 1]), to: &link)
+                patch["version"] = link.noteVersion ?? 1
+                apply(try await client.call("PATCH", "/notes/\(noteID)", body: patch), to: &link)
             } catch let e as RomeError where e.code == "version-conflict" {
                 apply(try await client.call("GET", "/notes/\(noteID)"), to: &link)
-                apply(try await client.call("PATCH", "/notes/\(noteID)", body: ["body": body, "version": link.noteVersion ?? 1]), to: &link)
+                patch["version"] = link.noteVersion ?? 1
+                apply(try await client.call("PATCH", "/notes/\(noteID)", body: patch), to: &link)
+            } catch let e as RomeError where e.status == 403 {
+                throw RomeError(status: 403, code: e.code, message: "Only its author or a triager can reply while it's in Triage")
             }
-            for r in pending { setRemoteID("note", of: r, in: id) }
+            for r in pending { setRemoteID(r.field.key, of: r, in: id) }
             link.syncedDetails = c.details
         } else if link.state == "converted", let key = link.issueKey {
             for r in pending {
@@ -625,7 +791,7 @@ final class Tickets: ObservableObject {
 
     /// Details changed after triage → one "Details" comment on the issue, created once and then edited.
     private func pushDetails(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
-        guard let c = CommentStore.shared.comment(id), link.state == "converted", let key = link.issueKey,
+        guard let c = CommentStore.shared.comment(id), !c.remote, link.state == "converted", let key = link.issueKey,
               c.details != (link.syncedDetails ?? "") else { return }
         let body = c.details.isEmpty ? "**Details** (removed in ANNOT)" : "**Details**\n\n" + c.details
         if let cid = link.detailsCommentID {
@@ -637,6 +803,52 @@ final class Tickets: ObservableObject {
             link.detailsCommentVersion = res["version"] as? Int
         }
         link.syncedDetails = c.details
+        if link.ownsIssue { // for the other Macs, which don't show that comment as a reply
+            try? await patchIssue(client, key, fields: ["annot.details": Comment.field(c.details) ?? NSNull(),
+                                                        "annot.details_comment": link.detailsCommentID ?? NSNull()])
+        }
+    }
+
+    /// Merges metafields into an issue (null removes one), at the version it has now.
+    private func patchIssue(_ client: RomeClient, _ key: String, fields: [String: Any]) async throws {
+        for attempt in 1...2 {
+            let version = try await client.call("GET", "/issues/\(key)")["version"] as? Int ?? 1
+            do {
+                _ = try await client.call("PATCH", "/issues/\(key)", body: ["version": version, "metafields": fields])
+                return
+            } catch let e as RomeError where e.code == "version-conflict" && attempt == 1 {
+                continue
+            }
+        }
+    }
+
+    /// Our comments sent before ANNOT shared them: their fields, and the replies that only went into the note body,
+    /// into the note's metafields (or the issue's once triaged), so the other Macs show them too. Once per comment;
+    /// where Rome doesn't let us, it stays as it is.
+    private func pushFields(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
+        guard !link.shared, let c = CommentStore.shared.comment(id), !c.remote, let noteID = link.noteID else { return }
+        let old = c.replies.filter { $0.remoteID == "note" }
+        var fields: [String: Any] = c.fields
+        for r in old { fields[r.field.key] = r.field.value }
+        do {
+            switch link.state {
+            case "new":
+                do {
+                    apply(try await client.call("PATCH", "/notes/\(noteID)", body: ["version": link.noteVersion ?? 1, "metafields": fields]), to: &link)
+                } catch let e as RomeError where e.code == "version-conflict" {
+                    apply(try await client.call("GET", "/notes/\(noteID)"), to: &link)
+                    apply(try await client.call("PATCH", "/notes/\(noteID)", body: ["version": link.noteVersion ?? 1, "metafields": fields]), to: &link)
+                }
+            case "converted" where link.ownsIssue:
+                try await patchIssue(client, link.issueKey!, fields: fields)
+            default:
+                break // dismissed, or merged into another issue: not shown on the other Macs
+            }
+        } catch let e as RomeError where [403, 409].contains(e.status) {
+            bridgeLog.notice("fields of \(id, privacy: .public) not shared: \(e.message, privacy: .public)")
+        }
+        for r in old { setRemoteID(r.field.key, of: r, in: id, was: "note") }
+        link.shared = true
     }
 
     /// Resolve/Reopen → Rome: dismiss/restore the note in Triage; Done/To Do on the issue it became.
@@ -675,9 +887,9 @@ final class Tickets: ObservableObject {
         return res["outcome"] as? String != "pending_approval"
     }
 
-    private func setRemoteID(_ rid: String, of reply: Comment.Reply, in id: String) {
+    private func setRemoteID(_ rid: String, of reply: Comment.Reply, in id: String, was: String? = nil) {
         CommentStore.shared.applyRemote(id) { c in
-            guard let i = c.replies.firstIndex(where: { $0.remoteID == nil && $0.createdAt == reply.createdAt && $0.text == reply.text }) else { return false }
+            guard let i = c.replies.firstIndex(where: { $0.remoteID == was && $0.createdAt == reply.createdAt && $0.text == reply.text }) else { return false }
             c.replies[i].remoteID = rid
             return true
         }
@@ -723,14 +935,55 @@ final class ProjectChoices: @unchecked Sendable {
         return all.flatMap(\.people).filter { seen.insert($0.handle).inserted }
     }
 
-    /// For the web overlay: {projects: [{key, name, people: [{handle, name, agent}]}], project: default}.
-    var overlayOptions: [String: Any] {
+    /// Where a comment is made, for picking its project: the page's host ("shop.acme.com"), or "app:<bundle ID>"
+    /// outside the browser. nil when there's nothing to tell places apart by.
+    static func place(url: String?, bundleID: String = "") -> String? {
+        if let u = url.flatMap(URLComponents.init(string:)), ["http", "https"].contains(u.scheme), let host = u.host, !host.isEmpty {
+            return host.lowercased()
+        }
+        return bundleID.isEmpty ? nil : "app:" + bundleID
+    }
+
+    /// The project whose domains cover `place`: a domain itself (or www. in front of it) before *.wildcards,
+    /// the longest wildcard first. A wildcard covers the bare domain too.
+    func match(_ place: String) -> (key: String, rule: String)? {
+        guard !place.hasPrefix("app:") else { return nil }
+        let bare = place.hasPrefix("www.") ? String(place.dropFirst(4)) : place
+        var best: (key: String, rule: String, score: Int)?
+        for p in all {
+            for rule in p.domains {
+                let score: Int
+                if rule == place || rule == bare { score = 1000 + rule.count }
+                else if rule.hasPrefix("*."), bare == rule.dropFirst(2) || place.hasSuffix(rule.dropFirst(1)) { score = rule.count }
+                else { continue }
+                if score > best?.score ?? 0 { best = (p.key, rule, score) }
+            }
+        }
+        return best.map { ($0.key, $0.rule) }
+    }
+
+    /// Where a new comment at `place` goes: the project whose domains cover it, else the last pick there, else the
+    /// default. `why` says which, for the comment box; nil for the default.
+    func pick(for place: String?) -> (project: String?, why: String?) {
+        let all = self.all
+        func known(_ key: String?) -> String? { key.flatMap { k in all.contains { $0.key == k } ? k : nil } }
+        if let place, let m = match(place) { return (m.key, "matches \(m.rule)") }
+        if let place, let last = Settings.lastPick(at: place), last.isEmpty || known(last) != nil {
+            return (known(last), place.hasPrefix("app:") ? "last used in this app" : "last used on this site")
+        }
+        return (known(Settings.ticketsProjectKey), nil)
+    }
+
+    /// For the web overlay: {projects: [{key, name, people: [{handle, name, agent}]}], project: the pick for this page, why}.
+    func overlayOptions(for place: String?) -> [String: Any] {
         let all = self.all
         guard !all.isEmpty else { return [:] }
         var o: [String: Any] = ["projects": all.map { p in
             ["key": p.key, "name": p.name, "people": p.people.map { ["handle": $0.handle, "name": $0.name, "agent": $0.agent] }] as [String: Any]
         }]
-        o["project"] = Settings.ticketsProjectKey.flatMap { key in all.contains { $0.key == key } ? key : nil }
+        let pick = pick(for: place)
+        o["project"] = pick.project
+        o["why"] = pick.why
         return o
     }
 }
@@ -748,7 +1001,60 @@ extension Comment {
         }
         let pageTitle = isWeb ? (anchor["dom"] as? [String: Any])?["page_title"] as? String : anchor("window_title")
         if let pageTitle, !pageTitle.isEmpty { source["page_title"] = String(pageTitle.prefix(255)) }
-        return ["title": title, "body": String(markdown(screenshotPath: false).prefix(20_000)), "kind": "annotation", "source": source]
+        return ["title": title, "body": String(markdown(screenshotPath: false).prefix(20_000)), "kind": "annotation", "source": source,
+                "metafields": fields.merging(replies.prefix(35).map(\.field)) { $1 }]
+    }
+
+    /// The comment as metafields, which Rome carries into the issue the note becomes. Every ANNOT reads its
+    /// colleagues' comments from them: `annot.*` is the comment and where its pin goes, the rest is there to filter
+    /// by. Replies made while the note is in Triage join as `annot.reply.*` (see `Reply.field`). Values of
+    /// 1–2,000 characters, so empty ones are left out.
+    var fields: [String: String] {
+        var m = ["annot.id": id, "annot.author": author, "annot.text": text, "annot.created": ISO.string(createdAt),
+                 "os": "macOS " + ProcessInfo.processInfo.operatingSystemVersionString]
+        m["annot.anchor"] = anchorField
+        m["annot.details"] = details
+        if let u = url.flatMap({ URLComponents(string: $0) }), ["http", "https"].contains(u.scheme) {
+            var page = u
+            page.user = nil
+            page.password = nil
+            m["page.host"] = page.host?.lowercased()
+            m["page.url"] = page.string
+        }
+        if isWeb {
+            m["browser"] = Browser.with(anchor("browser"))?.name
+        } else {
+            m["app"] = anchor("app_name")
+            m["app.bundle_id"] = anchor("bundle_id")
+        }
+        return m.compactMapValues(Self.field)
+    }
+
+    /// A metafield value: at most 2,000 characters, nil when blank.
+    static func field(_ v: String) -> String? {
+        let s = String(v.prefix(2000))
+        return s.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : s
+    }
+
+    /// Where the pin goes, as JSON within 2,000 characters: without the HTML snippet and styles, and with less of
+    /// the element if it's still too long. nil if even that doesn't fit.
+    private var anchorField: String? {
+        var a = anchor
+        func encoded() -> String? {
+            (try? JSONSerialization.data(withJSONObject: a, options: [.sortedKeys, .withoutEscapingSlashes])).map { String(decoding: $0, as: UTF8.self) }
+        }
+        if var dom = a["dom"] as? [String: Any] {
+            dom["html"] = nil
+            dom["style"] = nil
+            a["dom"] = dom
+        }
+        if let s = encoded(), s.count <= 2000 { return s }
+        if let dom = a["dom"] as? [String: Any] { a["dom"] = ["path": dom["path"], "page_title": dom["page_title"]].compactMapValues { $0 } }
+        for (key, n) in [("text", 200), ("ax_title", 200), ("ax_value", 0), ("ax_path", 400), ("window_title", 200)] {
+            if let v = a[key] as? String { a[key] = n == 0 ? nil : String(v.prefix(n)) }
+        }
+        if let s = encoded(), s.count <= 2000 { return s }
+        return nil
     }
 
     /// At most 16 KB: the recommended keys, plus the AX element for comments outside the browser.
@@ -776,5 +1082,16 @@ extension Comment {
             if let p = anchor["point"] as? [String: Any] { ctx["x"] = p["x"]; ctx["y"] = p["y"] }
         }
         return ctx.filter { ($0.value as? String)?.isEmpty != true }
+    }
+}
+
+extension Comment.Reply {
+    /// The reply as a metafield while its note is in Triage, where a note takes no comments. The key is the same
+    /// on every retry, so it never lands twice: annot.reply.<milliseconds>.<author>.
+    var field: (key: String, value: String) {
+        let who = String(author.filter { $0.isASCII && ($0.isLetter || $0.isNumber) }.prefix(20))
+        let value = ["author": author, "text": String(text.prefix(1800)), "at": ISO.string(createdAt)]
+        let json = (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])).map { String(decoding: $0, as: UTF8.self) }
+        return ("annot.reply.\(Int64(createdAt.timeIntervalSince1970 * 1000)).\(who.isEmpty ? "x" : who)", json ?? "{}")
     }
 }

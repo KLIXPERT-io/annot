@@ -245,9 +245,9 @@ final class NativeCapture {
 
     private func openComposer(for t: AXTarget, in view: CaptureView) {
         let pad: CGFloat = 24, size = CGSize(width: 360 + pad * 2, height: 380 + pad * 2) // room for the @ list
-        let projects = Tickets.choices.all
-        let host = FirstClickHostingView(rootView: NativeComposer(author: Settings.authorName, context: t.summary, projects: projects,
-                                                                  project: Settings.ticketsProjectKey.flatMap { k in projects.contains { $0.key == k } ? k : nil },
+        let pick = Tickets.choices.pick(for: ProjectChoices.place(url: t.url, bundleID: t.bundleID))
+        let host = FirstClickHostingView(rootView: NativeComposer(author: Settings.authorName, context: t.summary, projects: Tickets.choices.all,
+                                                                  project: pick.project, why: pick.why,
                                                                   onSubmit: { [weak self] in self?.submit($0, annotate: $1, project: $2) }))
         guard let window = view.window else { return }
         let local = window.convertFromScreen(CGRect(origin: CGPoint(x: click.x, y: Self.primaryHeight - click.y), size: .zero)).origin
@@ -272,7 +272,7 @@ final class NativeCapture {
         ]
         if !t.url.isEmpty { anchor["url"] = t.url }
         let comment = CommentStore.shared.create(text: text, anchor: anchor)
-        if !Tickets.choices.all.isEmpty { Settings.chooseProject(project) }
+        if !Tickets.choices.all.isEmpty { Settings.chooseProject(project, at: ProjectChoices.place(url: t.url, bundleID: t.bundleID)) }
         HUD.show(project.map { "Comment saved · \($0) Triage" } ?? "Comment saved")
         Task.detached {
             if let png = await Screenshot.region(around: t.frame, click: click) {
@@ -386,6 +386,7 @@ struct NativeComposer: View {
     let context: String
     let projects: [Tickets.Project] // empty: not connected, no picker
     @State var project: String? // nil keeps the comment on this Mac
+    @State var why: String? // why it's this project ("last used in this app"); nil for the default or once changed
     let onSubmit: (String, Bool, String?) -> Void // text, draw on the screenshot, project
     @State private var text = ""
     @State private var mention = MentionState()
@@ -446,15 +447,16 @@ struct NativeComposer: View {
                     HStack(spacing: 6) {
                         Text("Send to").foregroundStyle(.secondary)
                         Menu {
-                            Button("Keep on this Mac") { project = nil }
+                            Button("Keep on this Mac") { project = nil; why = nil }
                             Divider()
-                            ForEach(projects) { p in Button("\(p.name) (\(p.key))") { project = p.key } }
+                            ForEach(projects) { p in Button("\(p.name) (\(p.key))") { project = p.key; why = nil } }
                         } label: {
                             Text(projects.first { $0.key == project }.map { "\($0.name) (\($0.key))" } ?? "Keep on this Mac")
                         }
                         .menuStyle(.borderlessButton)
                         .fixedSize()
-                        Spacer()
+                        if let why { Text(why).foregroundStyle(.tertiary).lineLimit(1).truncationMode(.tail) }
+                        Spacer(minLength: 0)
                     }
                     .font(.system(size: 11))
                     .padding(.horizontal, 12).padding(.vertical, 6)

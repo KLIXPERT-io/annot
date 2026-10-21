@@ -135,7 +135,7 @@ final class BrowserBridge: @unchecked Sendable {
         let comment = CommentStore.shared.create(text: text, anchor: anchor, tempId: e["tempId"] as? String)
         // The comment box's pick (null: keep local); no picker shown means the default.
         let project = e.keys.contains("project") ? e["project"] as? String : Settings.ticketsProjectKey
-        if e.keys.contains("project") { Settings.chooseProject(project) }
+        if e.keys.contains("project") { Settings.chooseProject(project, at: ProjectChoices.place(url: anchor["url"] as? String)) }
         // Viewport origin on screen = mouse position on screen − position in the viewport (from the click).
         guard let screen = e["screen"] as? [String: Any], let client = e["client"] as? [String: Any] else {
             Tickets.autoSend(comment.id, to: project)
@@ -184,15 +184,19 @@ final class BrowserBridge: @unchecked Sendable {
     /// Starts (or toggles off) web capture in the browser's active tab (APP-2). `done(false)` means we can't reach the page.
     func startCapture(in browser: Browser, _ done: @escaping (Bool) -> Void) {
         queue.async {
-            var o = Tickets.choices.overlayOptions
-            o["author"] = Settings.authorName
-            let opts = Self.json(o) ?? "{}"
-            let js = "window.__annot ? window.__annot.startCapture(\(opts)) : 'missing'"
-            var r = self.run(js, in: browser)
-            if r == "missing" {
-                let injected = self.run(self.overlaySource, in: browser)
-                bridgeLog.notice("overlay injected for capture: \(injected ?? "nil", privacy: .public)")
-                if injected != nil { r = self.run(js, in: browser) }
+            // The page's address first: which project the comment box offers depends on the site.
+            var r = self.run("location.href", in: browser)
+            if let href = r {
+                var o = Tickets.choices.overlayOptions(for: ProjectChoices.place(url: href))
+                o["author"] = Settings.authorName
+                let opts = Self.json(o) ?? "{}"
+                let js = "window.__annot ? window.__annot.startCapture(\(opts)) : 'missing'"
+                r = self.run(js, in: browser)
+                if r == "missing" {
+                    let injected = self.run(self.overlaySource, in: browser)
+                    bridgeLog.notice("overlay injected for capture: \(injected ?? "nil", privacy: .public)")
+                    if injected != nil { r = self.run(js, in: browser) }
+                }
             }
             let ok = r == "ok" || r == "stopped"
             if ok { self.schedule(0.3) }
@@ -249,16 +253,20 @@ final class BrowserBridge: @unchecked Sendable {
         }
     }
 
+    /// At most 8 s per script instead of AppleScript's 2 minutes: a busy browser (Arc times out now and then) would
+    /// otherwise hold up the queue, and with it every Add Comment, that long.
     static func wrap(_ js: String, for browser: Browser) -> String {
         let command = switch browser.dialect {
         case .chromium: "execute active tab of window 1 javascript \(literal(js))"
         case .safari: "do JavaScript \(literal(js)) in current tab of window 1"
         }
         return """
-        tell application id "\(browser.bundleID)"
-            if (count of windows) is 0 then return "nowindow"
-            return \(command)
-        end tell
+        with timeout of 8 seconds
+            tell application id "\(browser.bundleID)"
+                if (count of windows) is 0 then return "nowindow"
+                return \(command)
+            end tell
+        end timeout
         """
     }
 

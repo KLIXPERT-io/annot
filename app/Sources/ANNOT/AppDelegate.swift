@@ -13,7 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var setupWindow: SetupWindowController?
     private var bag = Set<AnyCancellable>()
     private let commentItem = NSMenuItem(title: "Add Comment", action: #selector(commentMode), keyEquivalent: "")
-    private let projectItem = NSMenuItem(title: "Send Comments To", action: nil, keyEquivalent: "") // submenu, filled on open
+    private let projectItem = NSMenuItem(title: "Default Project", action: nil, keyEquivalent: "") // submenu, filled on open
     private lazy var connectItem = item("Connect to Rome…", #selector(connectRome))
     private var commentsWindow: NSWindow?
     private lazy var commentsItem = item("Comments…", #selector(showComments), key: "k")
@@ -86,9 +86,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             HUD.show("Comment mode cancelled")
             return
         }
+        Task { @MainActor in Tickets.shared.refreshIfStale() }
         if let browser = Browser.front {
             asking = browser
             cancelAsk = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in // never a press that seems to do nothing
+                if self?.asking == browser, self?.cancelAsk == false { HUD.show("Waiting for \(browser.name)…") }
+            }
             BrowserBridge.shared.startCapture(in: browser) { [weak self] ok in
                 guard let self else { return }
                 self.asking = nil
@@ -124,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         projectItem.isHidden = projects.isEmpty
         connectItem.isHidden = Tickets.shared.account != nil
         connectItem.title = Tickets.shared.rejected ? "Reconnect to Rome…" : "Connect to Rome…"
-        projectItem.title = "Send Comments To: " + (projects.first { $0.key == current }?.key ?? "This Mac only")
+        projectItem.title = "Default Project: " + (projects.first { $0.key == current }?.key ?? "This Mac only")
         projectItem.submenu?.removeAllItems()
         for (title, key) in [("Keep on This Mac", nil)] + projects.map({ ("\($0.name) (\($0.key))", Optional($0.key)) }) {
             let i = NSMenuItem(title: title, action: #selector(chooseProject(_:)), keyEquivalent: "")
@@ -177,12 +181,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if setupWindow == nil {
             let w = SetupWindowController()
             w.onConnectRome = { [weak self] in self?.connectRome() }
-            w.onAccessibilityGranted = { [weak self] in
-                // The ⌥ monitor started without Accessibility: start it again so double-tap works right away.
-                guard let self, Settings.shared.doubleTapOption else { return }
-                self.doubleTap.stop()
-                self.doubleTap.start()
-            }
             setupWindow = w
         }
         setupWindow?.show()
@@ -195,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func chooseProject(_ sender: NSMenuItem) {
         Settings.shared.ticketsProject = sender.representedObject as? String
-        HUD.show(sender.representedObject == nil ? "New comments stay on this Mac" : "New comments go to \(sender.title)")
+        HUD.show(sender.representedObject == nil ? "By default, comments stay on this Mac" : "Default project: \(sender.title)")
     }
 
     @objc func quit() { NSApp.terminate(nil) }

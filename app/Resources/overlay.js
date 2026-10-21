@@ -15,7 +15,8 @@
 
   let me = '';
   let projects = []; // [{key, name, people: [{handle, name, agent}]}] where comments can go; empty: no picker
-  let project = null; // the default; null keeps comments on this Mac
+  let project = null; // the pick for this page; null keeps comments on this Mac
+  let why = ''; // why it's this project ("matches acme.com"); '' for the default
   let closeMentions = null; // set while an @ list is open
   let queue = [];
   let mode = 'idle'; // idle | capture | compose | thread
@@ -138,6 +139,7 @@ textarea::placeholder{color:#a3a3a3}
 .mention .name{font-size:13px;font-weight:500;white-space:nowrap}
 .thread .mentions{border-top:0;border-bottom:1px solid #f0f0f0}
 .proj{font:inherit;font-size:11px;color:#1e1e1e;border:1px solid #e3e3e3;border-radius:6px;padding:2px 4px;background:#fff;max-width:210px;cursor:pointer}
+.why{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#a8a8a8}
 .row .ib{width:26px;height:26px}
 .ib{width:28px;height:28px;border-radius:6px;border:0;background:transparent;color:#5c5c5c;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
 .ib:hover{background:#f2f2f2;color:#1e1e1e}
@@ -412,7 +414,7 @@ textarea::placeholder{color:#a3a3a3}
 
   function startCapture(opts) {
     if (opts && opts.author) me = opts.author;
-    if (opts) { projects = opts.projects || []; project = opts.project || null; }
+    if (opts) { projects = opts.projects || []; project = opts.project || null; why = opts.why || ''; }
     if (mode === 'capture' || mode === 'compose') { endCapture(true); return 'stopped'; } // hotkey toggles
     closeThread();
     hidePreview();
@@ -563,14 +565,16 @@ textarea::placeholder{color:#a3a3a3}
     const draw = h('button', { class: 'ib', type: 'button', title: 'Post and draw on the screenshot  ⌘⏎' }, icon('pen', 15));
     draw.addEventListener('click', () => { const t = ed.ta.value.trim(); if (t) submitDraft(t, ed.ta, true); else ed.ta.focus(); });
     ed.row.insertBefore(draw, ed.row.lastChild);
-    if (projects.length) { // where it goes; the choice becomes the default for the next comment
+    let reason = null;
+    if (projects.length) { // where it goes: the project for this site, else the last pick here; a pick is remembered
       pick = h('select', { class: 'proj', title: 'Where this comment goes' },
         h('option', { value: '', text: 'Keep on this Mac' }),
         projects.map((p) => h('option', { value: p.key, text: p.name + ' (' + p.key + ')' })));
       pick.value = project || '';
-      pick.addEventListener('change', () => ed.ta.focus({ preventScroll: true }));
+      reason = h('span', { class: 'why', text: why });
+      pick.addEventListener('change', () => { reason.hidden = true; ed.ta.focus({ preventScroll: true }); });
     }
-    card = h('div', { class: 'card composer' }, ed.row, ed.menu, pick && h('div', { class: 'dest' }, h('span', { text: 'Send to' }), pick));
+    card = h('div', { class: 'card composer' }, ed.row, ed.menu, pick && h('div', { class: 'dest' }, h('span', { text: 'Send to' }), pick, reason));
     card._ta = ed.ta;
     card._pick = pick;
     ui.append(card);
@@ -599,7 +603,7 @@ textarea::placeholder{color:#a3a3a3}
     const r = d.el.getBoundingClientRect();
     const p = draftPoint();
     const chosen = card && card._pick ? card._pick.value || null : undefined; // undefined: no picker shown
-    if (chosen !== undefined) project = chosen;
+    if (chosen !== undefined && chosen !== project) { project = chosen; why = ''; }
     emit('comment.create', {
       tempId, text, anchor: d.anchor, project: chosen,
       rect: { x: r.left, y: r.top, w: r.width, h: r.height },

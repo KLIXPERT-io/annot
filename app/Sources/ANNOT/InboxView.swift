@@ -249,7 +249,7 @@ private struct CommentDetail: View {
                 } label: {
                     Label(comment.isOpen ? "Resolve" : "Reopen", systemImage: comment.isOpen ? "checkmark.circle" : "arrow.uturn.backward.circle")
                 }
-                if comment.screenshot != nil {
+                if comment.screenshot != nil, !comment.remote { // drawings are their author's
                     Button { Annotator.show(comment) } label: { Label("Annotate", systemImage: "pencil.tip.crop.circle") }
                         .help("Draw arrows, boxes and labels on the screenshot")
                 }
@@ -266,7 +266,7 @@ private struct CommentDetail: View {
                     }
                     .disabled(comment.screenshot == nil)
                     Divider()
-                    Button("Delete…", role: .destructive) { confirmDelete = true }
+                    Button(comment.remote ? "Remove from This Mac…" : "Delete…", role: .destructive) { confirmDelete = true }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -285,8 +285,10 @@ private struct CommentDetail: View {
                             .frame(maxWidth: .infinity, maxHeight: 320)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.black.opacity(0.08)))
-                            .onTapGesture { Annotator.show(comment) }
-                            .help("Click to draw arrows, boxes and labels")
+                            .onTapGesture {
+                                if comment.remote { NSWorkspace.shared.open(URL(fileURLWithPath: comment.bestScreenshot!)) } else { Annotator.show(comment) }
+                            }
+                            .help(comment.remote ? "Click to open in Preview" : "Click to draw arrows, boxes and labels")
                     }
                     MessageView(author: comment.author, text: comment.text, date: comment.createdAt)
                     DetailsBox(comment: comment).padding(.leading, 38)
@@ -331,10 +333,11 @@ private struct CommentDetail: View {
             .padding(12)
         }
         .task { await Tickets.shared.sync(comment.id) }
-        .confirmationDialog("Delete this comment?", isPresented: $confirmDelete) {
-            Button("Delete", role: .destructive) { CommentStore.shared.delete(comment.id) }
+        .confirmationDialog(comment.remote ? "Remove this comment from this Mac?" : "Delete this comment?", isPresented: $confirmDelete) {
+            Button(comment.remote ? "Remove" : "Delete", role: .destructive) { CommentStore.shared.delete(comment.id) }
         } message: {
-            Text("The comment, its replies and screenshot are removed from this Mac.")
+            Text(comment.remote ? "It's \(comment.author)'s comment. Rome keeps it, and it comes back while it's open there."
+                 : "The comment, its replies and screenshot are removed from this Mac.")
         }
     }
 
@@ -466,22 +469,24 @@ private struct DetailsBox: View {
             }
             .onAppear { draft = comment.details; DispatchQueue.main.async { focused = true } }
         } else if comment.details.isEmpty {
-            Button { editing = true } label: { Label("Add details", systemImage: "text.badge.plus") }
-                .buttonStyle(.link)
-                .font(.system(size: 12))
+            if !comment.remote { // details are their author's
+                Button { editing = true } label: { Label("Add details", systemImage: "text.badge.plus") }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+            }
         } else {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text("Details").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Edit") { editing = true }.buttonStyle(.link).font(.system(size: 11))
+                    if !comment.remote { Button("Edit") { editing = true }.buttonStyle(.link).font(.system(size: 11)) }
                 }
                 Text(comment.details).font(.system(size: 13)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.secondary.opacity(0.07)))
-            .onTapGesture(count: 2) { editing = true }
+            .onTapGesture(count: 2) { editing = !comment.remote }
         }
     }
 

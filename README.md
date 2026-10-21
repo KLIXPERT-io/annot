@@ -23,8 +23,8 @@ Updates don't ask again.
 ## Build it
 
 ```bash
-./build.sh                         # → build/ANNOT.app (universal, signed with your dev cert if present)
-open build/ANNOT.app
+make install                       # build.sh → build/ANNOT.app (universal, signed), then replaces and starts /Applications/ANNOT.app
+make logs                          # what the browser bridge does
 ```
 
 To always sign with the same certificate, put `CODESIGN_IDENTITY="…"` in `signing.env` next to `build.sh` (git-ignored).
@@ -42,17 +42,29 @@ The icon is `app/AppIcon.icon`, an Icon Composer document (Xcode 26: open it in 
 
 ## Tickets (Rome)
 
-In **Settings › Account** (or **Connect to Rome…** in the menu), each person enters their Rome server's address and connects their own personal token: **Open Rome** goes to Settings › API tokens, where you create a token and copy it, and pasting it into the field connects. Rome only creates tokens from a browser session, so the app can't make one itself. The token is kept in the Keychain. Your name, picture and projects then come from the account (`GET /me`, `/me/tokens`, `/projects`), and you pick the project new comments go to. Disconnecting can also revoke the token in Rome. Every new comment then lands in that project's **Triage queue** as an annotation note (`POST /projects/{key}/notes`): the text and element details as Markdown, the page URL, the click context, and the screenshot plus the annotated one once you draw. Switching projects is one click: every comment box (web and native) has a **Send to** picker, and whatever you pick there becomes the default for the next comment. The menu bar has the same choice under **Send Comments To**. "Keep on This Mac" sends nothing. Comments made before you connected, or ones that failed, can be sent from the Comments window (**Send to Triage…** / **Retry**).
+In **Settings › Account** (or **Connect to Rome…** in the menu), each person enters their Rome server's address and connects their own personal token: **Open Rome** goes to Settings › API tokens, where you create a token and copy it, and pasting it into the field connects. Rome only creates tokens from a browser session, so the app can't make one itself. The token is kept in the Keychain. Your name, picture and projects then come from the account (`GET /me`, `/me/tokens`, `/projects`), and you pick a default project. Disconnecting can also revoke the token in Rome. Every new comment then lands in a project's **Triage queue** as an annotation note (`POST /projects/{key}/notes`): the text and element details as Markdown, the page URL, the click context, and the screenshot plus the annotated one once you draw. The note also carries the comment as metafields, which Rome passes on to the issue it becomes and which the other Macs read (see **Shared comments**): `annot.id`, `annot.author`, `annot.text`, `annot.created`, `annot.details`, `annot.anchor` (where the pin goes: the anchor as JSON without the HTML snippet, at most 2,000 characters), `os`, `page.host` and `page.url`, plus `browser` for web comments or `app` and `app.bundle_id` for the rest.
+
+Which project a comment goes to is decided per site, so switching between clients needs no clicks:
+
+1. **Domains in Rome.** A project's domains (`acme.com`, `*.acme.com`, set on the project in Rome) send every comment on those sites to it. `acme.com` covers `www.acme.com` too; a wildcard covers the bare domain; the most specific domain wins. Everyone on the team gets the same routing.
+2. **Your last pick there.** On sites without a domain, and in apps outside the browser, every comment box (web and native) has a **Send to** picker, and ANNOT remembers what you picked for that site or app.
+3. **The default**, for places you haven't picked anything yet: **Settings › Account** or **Default Project** in the menu bar. A pick in a comment box on a site without a domain also becomes the default.
+
+The comment box says why it chose a project ("matches acme.com", "last used on this site"). Picking another project on a site that has a domain sends just that comment elsewhere; the domain still decides the next one. Projects and their domains load again when Rome reports a project change and when comment mode starts with ones older than 10 minutes. "Keep on This Mac" sends nothing. Comments made before you connected, or ones that failed, can be sent from the Comments window (**Send to Triage…** / **Retry**).
 
 From then on it stays in sync both ways:
 
 | Here | Rome, note in Triage | Rome, after triage into its own issue |
 | --- | --- | --- |
-| Reply | the note body is rewritten with the thread | issue comment (and issue comments come back as replies) |
-| Details (added after posting) | part of the note body | one "Details" issue comment, edited on each change |
+| Reply | a metafield `annot.reply.<ms>.<author>` (`{author, text, at}`); the note body is rewritten with the thread | issue comment (and issue comments come back as replies) |
+| Details (added after posting) | part of the note body, and `annot.details` | one "Details" issue comment, edited on each change; `annot.details` and `annot.details_comment` on the issue |
 | Resolve / Reopen | dismiss / restore the note | transition to a Done status / back to To Do |
 
 A note merged into an existing issue as a comment still syncs replies, but resolving it doesn't close that issue. When both sides changed, Rome wins.
+
+**Shared comments:** every ANNOT keeps a copy of all open ANNOT comments in the projects its account can browse, from any Mac, so everyone sees each other's pins on the page and in the Comments window. On connecting and at launch it reads each project's Triage notes and the notes already triaged (`GET /notes?project=KEY&state=new|converted`), takes those with `annot.*` metafields and an open note or issue, and builds the comment from them: the pin from `annot.anchor`, the thread from `annot.reply.*` and the issue's comments, the screenshots from the note's or issue's files. It listens to every project over the WebSocket, so new comments, replies and status changes show up right away. Your own comments sent before this get their metafields on that first run.
+
+Other people's comments can be replied to and resolved like your own. Their details and drawings stay their author's. While such a note is in Triage, Rome lets only its author and triagers add to it, so replying or resolving needs the Triage role there; after triage, anyone who can comment on the issue can. Once resolved they stay as resolved; they go when Rome deletes them (a dismissed note after 30 days). **Remove from This Mac** hides one only until the next import (at launch, for instance) while it's still open in Rome.
 
 **@mentions:** typing `@` in any comment or reply box lists the people who can see the chosen project (`GET /principals?project=KEY`; ↑↓ and ↩ or Tab to pick). Mentions are written as `@handle`; the note gets a `For: @anna, @bob` line and `context.mentions`, so triage sees who should help. Rome doesn't notify from Triage notes, only from issue comments: once the note is an issue, replies with `@handle` notify those people.
 
@@ -107,7 +119,7 @@ More Chromium browsers with Chrome's AppleScript dictionary (Brave, Edge, Vivald
 
 ## PoC limits
 
-- **Local pins:** comments live on this Mac, so teammates don't see each other's pins. Rome syncs the thread and status, not the pins.
+- **Shared pins need Rome:** comments kept on this Mac (no project) aren't shared, and comments sent before metafields existed are shared only once their author's ANNOT has run this version.
 - **Open tabs keep the old overlay** until reloaded, so element details only appear in tabs loaded after an update.
 - **Not handled:** iframes, Shadow DOM targets, `position: fixed` pins (as in the PRD).
 - **Distribution:** a zip on GitHub releases, notarized only when built with a Developer ID certificate.

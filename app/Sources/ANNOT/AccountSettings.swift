@@ -67,7 +67,7 @@ struct AccountSettings: View {
 
     private var destination: some View {
         Section {
-            Picker("Send to", selection: $settings.ticketsProject) {
+            Picker("Default project", selection: $settings.ticketsProject) {
                 Text("Keep on This Mac").tag(String?.none)
                 if !tickets.projects.isEmpty { Divider() }
                 ForEach(tickets.projects) { Text("\($0.name) (\($0.key))").tag(String?.some($0.key)) }
@@ -85,10 +85,18 @@ struct AccountSettings: View {
                 Text("None of your projects takes notes from you yet. A project admin can give you a role.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
+            let mapped = tickets.projects.filter { !$0.domains.isEmpty }
+            if !mapped.isEmpty {
+                LabeledContent("By site") {
+                    VStack(alignment: .trailing, spacing: 3) {
+                        ForEach(mapped) { p in Text("\(p.domains.joined(separator: ", ")) → \(p.key)").textSelection(.enabled) }
+                    }
+                }
+            }
         } header: {
             Text("New comments")
         } footer: {
-            Text("They land in the Triage queue with their screenshots, and replies and Resolve stay in sync both ways. The Send to picker in each comment box changes this default.")
+            Text("They land in the Triage queue with their screenshots, and replies and Resolve stay in sync both ways. Pages on a project's domains (set in Rome) go to that project. Elsewhere the comment box remembers your pick for each site and app; the default is for places you haven't picked one yet.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
