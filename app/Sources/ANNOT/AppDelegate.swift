@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var asking: Browser? // startCapture sent, browser hasn't answered yet
     private var cancelAsk = false
     private var settingsWindow: SettingsWindowController?
+    private var setupWindow: SetupWindowController?
     private var bag = Set<AnyCancellable>()
     private let commentItem = NSMenuItem(title: "Add Comment", action: #selector(commentMode), keyEquivalent: "")
     private let projectItem = NSMenuItem(title: "Send Comments To", action: nil, keyEquivalent: "") // submenu, filled on open
@@ -36,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(browserAnchor) // browser status lines go below this
         menu.addItem(.separator())
         menu.addItem(item("Settings…", #selector(showSettings), key: ","))
+        menu.addItem(item("Setup Guide…", #selector(showSetup)))
         updateItem.target = Updater.shared
         menu.addItem(updateItem)
         let info = Bundle.main.infoDictionary ?? [:]
@@ -73,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             BrowserBridge.shared.kick()
         }
 
-        if !Settings.shared.onboarded { showSettings() }
+        if !Settings.shared.onboarded { showSetup() }
     }
 
     // APP-1 / APP-2
@@ -170,6 +172,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showSettings() { settings(nil) }
 
     @objc func connectRome() { settings(.account) }
+
+    @objc func showSetup() {
+        if setupWindow == nil {
+            let w = SetupWindowController()
+            w.onConnectRome = { [weak self] in self?.connectRome() }
+            w.onAccessibilityGranted = { [weak self] in
+                // The ⌥ monitor started without Accessibility: start it again so double-tap works right away.
+                guard let self, Settings.shared.doubleTapOption else { return }
+                self.doubleTap.stop()
+                self.doubleTap.start()
+            }
+            setupWindow = w
+        }
+        setupWindow?.show()
+    }
 
     private func settings(_ tab: SettingsWindowController.Tab?) {
         if settingsWindow == nil { settingsWindow = SettingsWindowController() }

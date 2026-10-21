@@ -205,14 +205,24 @@ final class BrowserBridge: @unchecked Sendable {
         queue.async { _ = self.run("window.__annot ? window.__annot.stopCapture() : 'missing'", in: browser) }
     }
 
+    /// One tiny script in a running browser, even in the background: the setup guide's live check while the user
+    /// turns on JavaScript from Apple Events. Updates `states` like a poll does; `done` runs after that (main thread).
+    /// Only for browsers already allowed (Automation), or macOS would ask from here.
+    func check(_ browser: Browser, _ done: @escaping () -> Void = {}) {
+        queue.async {
+            if browser.isRunning { _ = self.execute(NSAppleScript(source: Self.wrap("'ok'", for: browser)), in: browser, inBackground: true) }
+            DispatchQueue.main.async(execute: done) // after setState's update, which is queued first
+        }
+    }
+
     // MARK: AppleScript plumbing
 
     private func run(_ js: String, in browser: Browser) -> String? {
         execute(NSAppleScript(source: Self.wrap(js, for: browser)), in: browser)
     }
 
-    private func execute(_ script: NSAppleScript?, in browser: Browser) -> String? {
-        guard Browser.front == browser, let script else { return nil } // BR-5
+    private func execute(_ script: NSAppleScript?, in browser: Browser, inBackground: Bool = false) -> String? {
+        guard inBackground || Browser.front == browser, let script else { return nil } // BR-5
         var err: NSDictionary?
         let out = script.executeAndReturnError(&err)
         if let err {

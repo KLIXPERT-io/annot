@@ -19,7 +19,10 @@ enum Permissions {
         }
     }
 
+    /// macOS shows its alert (and lists ANNOT in System Settings) only the first time; after that, open the list.
     static func requestAccessibility() {
+        if UserDefaults.standard.bool(forKey: "askedAccessibility") { openPane("Privacy_Accessibility"); return }
+        UserDefaults.standard.set(true, forKey: "askedAccessibility")
         AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
     }
 
@@ -27,9 +30,15 @@ enum Permissions {
         if !CGRequestScreenCaptureAccess() { openPane("Privacy_ScreenCapture") }
     }
 
+    /// macOS asks once per browser, and only while it runs: starts it first if needed.
     static func requestAutomation(_ browser: Browser) {
-        guard browser.isRunning else { open(browser); return }
+        let launch = !browser.isRunning
+        if launch { open(browser) }
         DispatchQueue.global(qos: .userInitiated).async {
+            if launch {
+                for _ in 0..<40 where !browser.isRunning { Thread.sleep(forTimeInterval: 0.25) }
+                Thread.sleep(forTimeInterval: 1) // up, but not yet answering Apple Events
+            }
             if automation(browser, ask: true) == false { openPane("Privacy_Automation") }
         }
     }
@@ -232,6 +241,14 @@ private struct PermissionsSettings: View {
                 Text("Browsers")
             } footer: {
                 Text("Each browser also needs “Allow JavaScript from Apple Events”.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                LabeledContent {
+                    Button("Open Guide…") { (NSApp.delegate as? AppDelegate)?.showSetup() }
+                } label: {
+                    Text("Setup guide")
+                    Text("Step by step, with a picture of each switch")
+                }
             }
         }
         .settingsPage()
