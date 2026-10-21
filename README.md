@@ -29,7 +29,7 @@ make logs                          # what the browser bridge does
 
 To always sign with the same certificate, put `CODESIGN_IDENTITY="…"` in `signing.env` next to `build.sh` (git-ignored).
 
-On first launch a setup guide walks through each permission below, one step at a time: a picture of where to turn it on (in German when macOS is), a live check that turns green, and a last step to restart the browsers. It opens again from **Setup Guide…** in the menu or **Settings › Permissions**. **Settings…** (⌘, in the menu) has three tabs: **General** (name, shortcuts, where comments are stored), **Account** (Rome, see below) and **Permissions**:
+On first launch a setup guide walks through each permission below, one step at a time: a picture of where to turn it on (in German when macOS is), a live check that turns green, and a last step to restart the browsers. It opens again from **Setup Guide…** in the menu or **Settings › Permissions**. **Settings…** (⌘, in the menu) has three tabs: **General** (name, shortcuts, **Open at login**, where comments are stored), **Account** (Rome, see below) and **Permissions**:
 
 | Permission | Why |
 | --- | --- |

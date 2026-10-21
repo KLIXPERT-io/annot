@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Combine
+import ServiceManagement
 import SwiftUI
 
 /// Permission checks for onboarding (APP-4).
@@ -51,6 +52,15 @@ enum Permissions {
 
     static func openPane(_ anchor: String) {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)")!)
+    }
+}
+
+/// Open at login, through the system's Login Items: what's set in System Settings › General › Login Items counts.
+enum LaunchAtLogin {
+    static var status: SMAppService.Status { SMAppService.mainApp.status }
+
+    static func set(_ on: Bool) throws {
+        if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
     }
 }
 
@@ -171,6 +181,8 @@ extension View {
 private struct GeneralSettings: View {
     @ObservedObject private var settings = Settings.shared
     @ObservedObject private var tickets = Tickets.shared
+    @State private var login = LaunchAtLogin.status
+    @State private var loginError: String?
 
     var body: some View {
         Form {
@@ -204,6 +216,24 @@ private struct GeneralSettings: View {
                 }
                 LabeledContent("Shortcut") { ShortcutRecorder(combo: $settings.hotKey) }
             }
+            Section {
+                Toggle(isOn: Binding(get: { login == .enabled || login == .requiresApproval }, set: setLogin)) {
+                    Text("Open at login")
+                    Text("Starts in the menu bar when you log in, so \(settings.triggerLabel) always works")
+                }
+                if login == .requiresApproval {
+                    LabeledContent {
+                        Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                    } label: {
+                        Text("Waiting for your OK")
+                        Text("Turn on ANNOT in System Settings › General › Login Items")
+                    }
+                }
+            } header: {
+                Text("Startup")
+            } footer: {
+                if let loginError { Text(loginError).font(.caption).foregroundStyle(.red) }
+            }
             Section("Storage") {
                 LabeledContent {
                     Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([CommentStore.databaseURL]) }
@@ -214,6 +244,18 @@ private struct GeneralSettings: View {
             }
         }
         .settingsPage()
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in login = LaunchAtLogin.status }
+        .onAppear { login = LaunchAtLogin.status }
+    }
+
+    private func setLogin(_ on: Bool) {
+        do {
+            try LaunchAtLogin.set(on)
+            loginError = nil
+        } catch {
+            loginError = "Couldn't \(on ? "add ANNOT to" : "remove ANNOT from") Login Items: \(error.localizedDescription)"
+        }
+        login = LaunchAtLogin.status
     }
 }
 
