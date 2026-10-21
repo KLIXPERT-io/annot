@@ -6,7 +6,7 @@ struct Comment: Identifiable {
         var author: String
         var text: String
         var createdAt: Date
-        var remoteID: String? // Rome comment ID, or its metafield (annot.reply.…) while in Triage; "note": only in the note body
+        var remoteID: String? // Rome comment ID (ncm_… on the note in Triage); older ones: annot.reply.… metafield, "note": only in the note body
     }
 
     var id: String

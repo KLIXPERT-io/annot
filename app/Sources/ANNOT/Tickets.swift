@@ -220,8 +220,8 @@ struct RomeClient {
 }
 
 /// Keeps comments and Rome in sync. Each comment becomes an annotation note in the chosen project's Triage queue,
-/// with its screenshots. From then on, both ways: replies ⇄ the note body (while in Triage) or the issue's comments
-/// (once triaged), Resolve/Reopen ⇄ dismiss/restore or Done/To Do. Rome's changes arrive over the WebSocket.
+/// with its screenshots. From then on, both ways: replies ⇄ the note's comments (while in Triage) or the issue's
+/// comments (once triaged), Resolve/Reopen ⇄ dismiss/restore or Done/To Do. Rome's changes arrive over the WebSocket.
 /// Comments stay local when no project is chosen.
 @MainActor
 final class Tickets: ObservableObject {
@@ -459,6 +459,7 @@ final class Tickets: ObservableObject {
             if let id = n["id"] as? String { notes.insert(id) }
             if let k = key(n["issue"]) { issues.insert(k) }
         }
+        if let id = (data["comment"] as? [String: Any])?["note_id"] as? String ?? data["note_id"] as? String { notes.insert(id) } // note_comment.*
         for k in [entity["key"] as? String, key(data["issue"]), key((data["comment"] as? [String: Any])?["issue"])] {
             if let k { issues.insert(k) }
         }
@@ -595,11 +596,6 @@ final class Tickets: ObservableObject {
                 link.remoteStatus = "open"
                 link.syncedDetails = c.details
                 CommentStore.shared.setTicket(link, for: id)
-                let sent = Set(c.replies.map(\.createdAt)) // already in the note body and its metafields
-                CommentStore.shared.applyRemote(id) { c in
-                    for i in c.replies.indices where c.replies[i].remoteID == nil && sent.contains(c.replies[i].createdAt) { c.replies[i].remoteID = c.replies[i].field.key }
-                    return !sent.isEmpty
-                }
                 updateSocket()
                 if announce { HUD.show("Sent to \(link.project) Triage") }
             } else {
@@ -629,6 +625,10 @@ final class Tickets: ObservableObject {
         apply(note, to: &link)
         var fields = note["metafields"] as? [String: String] ?? [:]
         var remote: String? = link.state == "dismissed" ? "resolved" : link.state == "new" ? "open" : nil
+        // The replies made in Triage; read-only once triaged, so they stay there
+        if note["comment_count"] as? Int ?? 0 > 0 || CommentStore.shared.comment(id)?.replies.contains(where: { $0.remoteID?.hasPrefix("ncm_") == true }) == true {
+            merge(try await client.list("/notes/\(noteID)/comments"), into: id, skipping: [])
+        }
         if link.state == "converted", let key = link.issueKey {
             if link.ownsIssue {
                 let issue = try await client.call("GET", "/issues/\(key)")
@@ -656,7 +656,7 @@ final class Tickets: ObservableObject {
         }
     }
 
-    /// Metafields → replies made in Triage (from any Mac), and for a comment from another Mac its details.
+    /// Metafields → replies made in Triage before notes took comments, and for a comment from another Mac its details.
     private func merge(fields: [String: String], into id: String) {
         CommentStore.shared.applyRemote(id) { c in
             var changed = false
@@ -708,7 +708,7 @@ final class Tickets: ObservableObject {
         }
     }
 
-    /// Issue comments → replies. Ours come back with the ID we stored (or, racing the POST answer, the same text).
+    /// Note or issue comments → replies. Ours come back with the ID we stored (or, racing the POST answer, the same text).
     private func merge(_ remote: [[String: Any]], into id: String, skipping own: [String]) {
         CommentStore.shared.applyRemote(id) { c in
             var changed = false
@@ -729,6 +729,7 @@ final class Tickets: ObservableObject {
                     changed = true
                 }
             }
+            if changed { c.replies.sort { $0.createdAt < $1.createdAt } }
             return changed
         }
     }
@@ -754,34 +755,22 @@ final class Tickets: ObservableObject {
         }
     }
 
-    /// Replies and details → Rome. In Triage: each reply as a metafield (the other Macs read the thread there) and,
-    /// for our own comments, the note body rewritten to show the thread. After: issue comments.
+    /// Replies → Rome: note comments while it's in Triage, issue comments after. Anyone who can comment may reply.
     private func pushReplies(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
         guard let c = CommentStore.shared.comment(id), let noteID = link.noteID else { return }
-        let pending = c.replies.filter { $0.remoteID == nil }
-        let detailsChanged = !c.remote && c.details != (link.syncedDetails ?? "")
+        var pending = c.replies.filter { $0.remoteID == nil }
         if link.state == "new" {
-            guard !pending.isEmpty || detailsChanged else { return }
-            var fields: [String: Any] = Dictionary(uniqueKeysWithValues: pending.map { $0.field })
-            var patch: [String: Any] = [:]
-            if !c.remote {
-                patch["body"] = String(c.markdown(screenshotPath: false).prefix(20_000))
-                if detailsChanged { fields["annot.details"] = Comment.field(c.details) ?? NSNull() }
-            }
-            patch["metafields"] = fields
             do {
-                patch["version"] = link.noteVersion ?? 1
-                apply(try await client.call("PATCH", "/notes/\(noteID)", body: patch), to: &link)
-            } catch let e as RomeError where e.code == "version-conflict" {
-                apply(try await client.call("GET", "/notes/\(noteID)"), to: &link)
-                patch["version"] = link.noteVersion ?? 1
-                apply(try await client.call("PATCH", "/notes/\(noteID)", body: patch), to: &link)
-            } catch let e as RomeError where e.status == 403 {
-                throw RomeError(status: 403, code: e.code, message: "Only its author or a triager can reply while it's in Triage")
+                while let r = pending.first {
+                    let res = try await client.call("POST", "/notes/\(noteID)/comments", body: ["body": r.text])
+                    if let rid = res["id"] as? String { setRemoteID(rid, of: r, in: id) }
+                    pending.removeFirst()
+                }
+            } catch let e as RomeError where e.code == "state-conflict" {
+                apply(try await client.call("GET", "/notes/\(noteID)"), to: &link) // triaged meanwhile: the rest goes to the issue
             }
-            for r in pending { setRemoteID(r.field.key, of: r, in: id) }
-            link.syncedDetails = c.details
-        } else if link.state == "converted", let key = link.issueKey {
+        }
+        if link.state == "converted", let key = link.issueKey {
             for r in pending {
                 let res = try await client.call("POST", "/issues/\(key)/comments", body: ["body": r.text])
                 if let rid = res["id"] as? String { setRemoteID(rid, of: r, in: id) }
@@ -789,10 +778,16 @@ final class Tickets: ObservableObject {
         }
     }
 
-    /// Details changed after triage → one "Details" comment on the issue, created once and then edited.
+    /// Details changed → Rome. In Triage: the note body and its metafield. After triage: one "Details" comment on
+    /// the issue, created once and then edited.
     private func pushDetails(_ client: RomeClient, _ id: String, _ link: inout TicketLink) async throws {
-        guard let c = CommentStore.shared.comment(id), !c.remote, link.state == "converted", let key = link.issueKey,
-              c.details != (link.syncedDetails ?? "") else { return }
+        guard let c = CommentStore.shared.comment(id), !c.remote, c.details != (link.syncedDetails ?? ""), let noteID = link.noteID else { return }
+        if link.state == "new" {
+            try await patchNote(client, noteID, &link, ["body": c.noteBody, "metafields": ["annot.details": Comment.field(c.details) ?? NSNull()] as [String: Any]])
+            link.syncedDetails = c.details
+            return
+        }
+        guard link.state == "converted", let key = link.issueKey else { return }
         let body = c.details.isEmpty ? "**Details** (removed in ANNOT)" : "**Details**\n\n" + c.details
         if let cid = link.detailsCommentID {
             let res = try await client.call("PATCH", "/comments/\(cid)", body: ["body": body, "version": link.detailsCommentVersion ?? 1])
@@ -806,6 +801,19 @@ final class Tickets: ObservableObject {
         if link.ownsIssue { // for the other Macs, which don't show that comment as a reply
             try? await patchIssue(client, key, fields: ["annot.details": Comment.field(c.details) ?? NSNull(),
                                                         "annot.details_comment": link.detailsCommentID ?? NSNull()])
+        }
+    }
+
+    /// Patches a note in Triage at the version it has now.
+    private func patchNote(_ client: RomeClient, _ noteID: String, _ link: inout TicketLink, _ patch: [String: Any]) async throws {
+        var patch = patch
+        do {
+            patch["version"] = link.noteVersion ?? 1
+            apply(try await client.call("PATCH", "/notes/\(noteID)", body: patch), to: &link)
+        } catch let e as RomeError where e.code == "version-conflict" {
+            apply(try await client.call("GET", "/notes/\(noteID)"), to: &link)
+            patch["version"] = link.noteVersion ?? 1
+            apply(try await client.call("PATCH", "/notes/\(noteID)", body: patch), to: &link)
         }
     }
 
@@ -833,12 +841,7 @@ final class Tickets: ObservableObject {
         do {
             switch link.state {
             case "new":
-                do {
-                    apply(try await client.call("PATCH", "/notes/\(noteID)", body: ["version": link.noteVersion ?? 1, "metafields": fields]), to: &link)
-                } catch let e as RomeError where e.code == "version-conflict" {
-                    apply(try await client.call("GET", "/notes/\(noteID)"), to: &link)
-                    apply(try await client.call("PATCH", "/notes/\(noteID)", body: ["version": link.noteVersion ?? 1, "metafields": fields]), to: &link)
-                }
+                try await patchNote(client, noteID, &link, ["metafields": fields])
             case "converted" where link.ownsIssue:
                 try await patchIssue(client, link.issueKey!, fields: fields)
             default:
@@ -1001,13 +1004,19 @@ extension Comment {
         }
         let pageTitle = isWeb ? (anchor["dom"] as? [String: Any])?["page_title"] as? String : anchor("window_title")
         if let pageTitle, !pageTitle.isEmpty { source["page_title"] = String(pageTitle.prefix(255)) }
-        return ["title": title, "body": String(markdown(screenshotPath: false).prefix(20_000)), "kind": "annotation", "source": source,
-                "metafields": fields.merging(replies.prefix(35).map(\.field)) { $1 }]
+        return ["title": title, "body": noteBody, "kind": "annotation", "source": source, "metafields": fields]
+    }
+
+    /// The note's Markdown. Replies are the note's comments; only those from before Rome had them stay in the body.
+    var noteBody: String {
+        var c = self
+        c.replies = replies.filter { $0.remoteID == "note" || $0.remoteID?.hasPrefix("annot.reply.") == true }
+        return String(c.markdown(screenshotPath: false).prefix(20_000))
     }
 
     /// The comment as metafields, which Rome carries into the issue the note becomes. Every ANNOT reads its
     /// colleagues' comments from them: `annot.*` is the comment and where its pin goes, the rest is there to filter
-    /// by. Replies made while the note is in Triage join as `annot.reply.*` (see `Reply.field`). Values of
+    /// by. Replies made in Triage before notes took comments are `annot.reply.*` (see `Reply.field`). Values of
     /// 1–2,000 characters, so empty ones are left out.
     var fields: [String: String] {
         var m = ["annot.id": id, "annot.author": author, "annot.text": text, "annot.created": ISO.string(createdAt),
@@ -1086,8 +1095,8 @@ extension Comment {
 }
 
 extension Comment.Reply {
-    /// The reply as a metafield while its note is in Triage, where a note takes no comments. The key is the same
-    /// on every retry, so it never lands twice: annot.reply.<milliseconds>.<author>.
+    /// The reply as a metafield, as replies in Triage were before notes took comments: still read, and written for
+    /// replies that only went into the note body. The key is the same on every retry: annot.reply.<milliseconds>.<author>.
     var field: (key: String, value: String) {
         let who = String(author.filter { $0.isASCII && ($0.isLetter || $0.isNumber) }.prefix(20))
         let value = ["author": author, "text": String(text.prefix(1800)), "at": ISO.string(createdAt)]
