@@ -46,7 +46,7 @@ enum AXProbe {
         return t
     }
 
-    private static func windowUnder(_ p: CGPoint) -> (pid: pid_t, title: String, frame: CGRect)? {
+    static func windowUnder(_ p: CGPoint) -> (pid: pid_t, title: String, frame: CGRect)? {
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
         let me = getpid()
         for w in list {
@@ -139,7 +139,7 @@ final class NativeCapture {
     private var composer: NSView?
 
     private static var primaryHeight: CGFloat { NSScreen.screens.first?.frame.height ?? 0 }
-    private static var mouse: CGPoint { let m = NSEvent.mouseLocation; return CGPoint(x: m.x, y: primaryHeight - m.y) }
+    static var mouse: CGPoint { let m = NSEvent.mouseLocation; return CGPoint(x: m.x, y: primaryHeight - m.y) }
     static func cocoa(_ r: CGRect) -> CGRect { CGRect(x: r.minX, y: primaryHeight - r.maxY, width: r.width, height: r.height) }
 
     func start() {

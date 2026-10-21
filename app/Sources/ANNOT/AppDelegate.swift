@@ -88,30 +88,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         Task { @MainActor in Tickets.shared.refreshIfStale() }
         if let browser = Browser.front {
+            startWeb(in: browser)
+        } else if let (browser, pid) = browserUnderMouse() {
             asking = browser
             cancelAsk = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in // never a press that seems to do nothing
-                if self?.asking == browser, self?.cancelAsk == false { HUD.show("Waiting for \(browser.name)…") }
-            }
-            BrowserBridge.shared.startCapture(in: browser) { [weak self] ok in
-                guard let self else { return }
-                self.asking = nil
-                if self.cancelAsk {
-                    if ok { BrowserBridge.shared.stopCapture(in: browser) }
-                    return
-                }
-                guard !ok else { return }
-                // Never fall back silently: without the page there's no DOM, only the Accessibility path.
-                switch BrowserBridge.shared.states[browser.bundleID] {
-                case .jsDisabled: HUD.show("\(browser.name): turn on \(browser.jsSetting)", isError: true, seconds: 5)
-                case .denied: HUD.show("Not allowed to control \(browser.name) (Privacy › Automation). Screen mode, no page details", isError: true, seconds: 5)
-                default: HUD.show("Can't reach the page in \(browser.name). Screen mode, no page details", isError: true, seconds: 4)
-                }
-                self.startNative()
+            bringForward(browser, pid: pid) { [weak self] in
+                guard let self, !self.cancelAsk else { self?.asking = nil; return }
+                if Browser.front == browser { self.startWeb(in: browser) } else { self.asking = nil; self.startNative() }
             }
         } else {
             startNative()
         }
+    }
+
+    private func startWeb(in browser: Browser) {
+        asking = browser
+        cancelAsk = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in // never a press that seems to do nothing
+            if self?.asking == browser, self?.cancelAsk == false { HUD.show("Waiting for \(browser.name)…") }
+        }
+        BrowserBridge.shared.startCapture(in: browser) { [weak self] ok in
+            guard let self else { return }
+            self.asking = nil
+            if self.cancelAsk {
+                if ok { BrowserBridge.shared.stopCapture(in: browser) }
+                return
+            }
+            guard !ok else { return }
+            // Never fall back silently: without the page there's no DOM, only the Accessibility path.
+            switch BrowserBridge.shared.states[browser.bundleID] {
+            case .jsDisabled: HUD.show("\(browser.name): turn on \(browser.jsSetting)", isError: true, seconds: 5)
+            case .denied: HUD.show("Not allowed to control \(browser.name) (Privacy › Automation). Screen mode, no page details", isError: true, seconds: 5)
+            default: HUD.show("Can't reach the page in \(browser.name). Screen mode, no page details", isError: true, seconds: 4)
+            }
+            self.startNative()
+        }
+    }
+
+    /// ANNOT itself is frontmost (its setup, settings, Comments or annotator window was the last one used, and closing
+    /// it leaves an accessory app active): the browser window under the mouse is what the user means to comment on.
+    private func browserUnderMouse() -> (Browser, pid_t)? {
+        guard NSWorkspace.shared.frontmostApplication == NSRunningApplication.current,
+              let win = AXProbe.windowUnder(NativeCapture.mouse),
+              let browser = Browser.with(NSRunningApplication(processIdentifier: win.pid)?.bundleIdentifier) else { return nil }
+        return (browser, win.pid)
+    }
+
+    /// Brings the browser window under the mouse to the front (it becomes `window 1` for AppleScript), then waits
+    /// up to a second for the browser to become frontmost.
+    private func bringForward(_ browser: Browser, pid: pid_t, _ done: @escaping () -> Void) {
+        let appEl = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(appEl, 0.25)
+        let p = NativeCapture.mouse
+        var hit: AXUIElement?, win: CFTypeRef?
+        if AXUIElementCopyElementAtPosition(appEl, Float(p.x), Float(p.y), &hit) == .success, let hit,
+           AXUIElementCopyAttributeValue(hit, kAXWindowAttribute as CFString, &win) == .success, let win,
+           CFGetTypeID(win) == AXUIElementGetTypeID() {
+            AXUIElementPerformAction(win as! AXUIElement, kAXRaiseAction as CFString)
+        }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        func wait(_ tries: Int) {
+            if Browser.front == browser || tries == 0 { done(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(tries - 1) }
+        }
+        wait(20)
     }
 
     private func startNative() {
