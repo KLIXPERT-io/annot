@@ -10,6 +10,7 @@
   if (window.__klx) window.__klx.setComments([]); // the overlay from before the rename (Klixpert Comments): clear its pins
 
   const PIN = 32;
+  const TITLE_AFTER = 80; // a longer first line asks for a title (Comment.titleAfter)
   const AGENT = '#9747FF';
   const COLORS = ['#0D99FF', '#F24822', '#14AE5C', '#FF7A00', '#FF24BD', '#00B5CE', '#5B6BFF'];
 
@@ -122,6 +123,8 @@ button{font:inherit}
 .av.agent{border-radius:7px;font-size:12px}
 textarea{flex:1;min-width:0;border:0;outline:0;resize:none;background:transparent;font:inherit;color:inherit;padding:3px 0;margin:0;height:24px;max-height:160px;overflow-y:auto;box-shadow:none}
 textarea::placeholder{color:#a3a3a3}
+.ttl{width:100%;box-sizing:border-box;border:0;outline:0;background:transparent;font:inherit;font-weight:600;color:inherit;padding:10px 12px 0 44px;margin:0;box-shadow:none}
+.ttl::placeholder{color:#a3a3a3;font-weight:600}
 .send{flex:none;width:26px;height:26px;border-radius:50%;border:0;background:#0D99FF;color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0;transition:background .12s}
 .send:disabled{background:#efefef;color:#b8b8b8;cursor:default}
 .send:not(:disabled):hover{background:#0a86df}
@@ -131,7 +134,7 @@ textarea::placeholder{color:#a3a3a3}
 .chip.s-changed{background:#ffe8e1;color:#c4320a}
 .chip.s-detached{background:#f0f0f0;color:#666}
 .sp{flex:1}
-.dest{display:flex;align-items:center;gap:6px;padding:7px 10px 8px 44px;border-top:1px solid #f0f0f0;font-size:11px;color:#8a8a8a}
+.dest{display:flex;align-items:center;gap:6px;padding:7px 10px 8px 44px;border-top:1px solid #f0f0f0;font-size:11px;color:#8a8a8a;white-space:nowrap}
 .mentions{border-top:1px solid #f0f0f0;padding:4px 0;max-height:196px;overflow-y:auto}
 .mention{display:flex;align-items:center;gap:8px;padding:4px 12px;cursor:pointer;min-width:0}
 .mention .av{width:20px;height:20px;font-size:9px}
@@ -139,7 +142,7 @@ textarea::placeholder{color:#a3a3a3}
 .mention .handle{color:#8a8a8a;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mention .name{font-size:13px;font-weight:500;white-space:nowrap}
 .thread .mentions{border-top:0;border-bottom:1px solid #f0f0f0}
-.proj{font:inherit;font-size:11px;color:#1e1e1e;border:1px solid #e3e3e3;border-radius:6px;padding:2px 4px;background:#fff;max-width:210px;cursor:pointer}
+.proj{font:inherit;font-size:11px;color:#1e1e1e;border:1px solid #e3e3e3;border-radius:6px;padding:2px 4px;background:#fff;max-width:210px;min-width:0;cursor:pointer}
 .why{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#a8a8a8}
 .row .ib{width:26px;height:26px}
 .ib{width:28px;height:28px;border-radius:6px;border:0;background:transparent;color:#5c5c5c;display:flex;align-items:center;justify-content:center;cursor:pointer;padding:0}
@@ -575,9 +578,25 @@ textarea::placeholder{color:#a3a3a3}
       reason = h('span', { class: 'why', text: why });
       pick.addEventListener('change', () => { reason.hidden = true; ed.ta.focus({ preventScroll: true }); });
     }
-    card = h('div', { class: 'card composer' }, ed.row, ed.menu, pick && h('div', { class: 'dest' }, h('span', { text: 'Send to' }), pick, reason));
+    let ttl = null;
+    if (projects.length) { // a title for Triage once the first line gets too long to be one; stays while it has one
+      ttl = h('input', { class: 'ttl', type: 'text', maxlength: 200, placeholder: 'Add a title', hidden: true,
+        title: "The title in Triage; without one it's the comment's first line" });
+      ed.ta.addEventListener('input', () => {
+        const hide = !ttl.value && ed.ta.value.trim().split('\n')[0].length <= TITLE_AFTER;
+        if (ttl.hidden !== hide) { ttl.hidden = hide; scheduleLayout(); }
+      });
+      ttl.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' || ev.isComposing) return;
+        ev.preventDefault();
+        const t = ed.ta.value.trim();
+        if (t) submitDraft(t, ed.ta, ev.metaKey); else ed.ta.focus({ preventScroll: true });
+      });
+    }
+    card = h('div', { class: 'card composer' }, ttl, ed.row, ed.menu, pick && h('div', { class: 'dest' }, h('span', { text: 'Send to' }), pick, reason));
     card._ta = ed.ta;
     card._pick = pick;
+    card._title = ttl;
     ui.append(card);
     placeDraft();
     ed.focus();
@@ -604,9 +623,10 @@ textarea::placeholder{color:#a3a3a3}
     const r = d.el.getBoundingClientRect();
     const p = draftPoint();
     const chosen = card && card._pick ? card._pick.value || null : undefined; // undefined: no picker shown
+    const title = card && card._title ? card._title.value.trim() : '';
     if (chosen !== undefined && chosen !== project) { project = chosen; why = ''; }
     emit('comment.create', {
-      tempId, text, anchor: d.anchor, project: chosen,
+      tempId, text, title, anchor: d.anchor, project: chosen,
       rect: { x: r.left, y: r.top, w: r.width, h: r.height },
       click: { x: p.x - scrollX, y: p.y - scrollY },
       screen: d.screen,

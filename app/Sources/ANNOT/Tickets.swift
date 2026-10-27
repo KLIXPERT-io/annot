@@ -544,6 +544,7 @@ final class Tickets: ObservableObject {
         var c = Comment(id: id, tempId: nil, author: fields["annot.author"] ?? author, text: fields["annot.text"] ?? n["title"] as? String ?? "",
                         status: "open", createdAt: ISO.date(fields["annot.created"]) ?? ISO.date(n["created_at"] as? String) ?? Date(),
                         projectID: (anchor["url"] as? String).flatMap { URL(string: $0)?.host } ?? anchor["bundle_id"] as? String, anchor: anchor)
+        c.title = fields["annot.title"] ?? ""
         c.details = fields["annot.details"] ?? ""
         c.remote = true
         link.shared = true
@@ -992,10 +993,19 @@ final class ProjectChoices: @unchecked Sendable {
 }
 
 extension Comment {
+    /// A first line longer than this makes a poor title: the comment box then asks for one (also in overlay.js).
+    static let titleAfter = 80
+
+    /// The note's title: the one given in the comment box, else the text's first line.
+    var noteTitle: String {
+        let given = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        let t = given.isEmpty ? firstLine.trimmingCharacters(in: .whitespaces) : given
+        return t.isEmpty ? "Annotation" : String(t.prefix(200))
+    }
+
     /// POST /projects/{key}/notes body: the comment as Markdown, the page and what was clicked as source context.
     var notePayload: [String: Any] {
-        let firstLine = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        let title = firstLine.trimmingCharacters(in: .whitespaces).isEmpty ? "Annotation" : String(firstLine.prefix(200))
         var source: [String: Any] = ["app": "annot", "external_id": id, "context": noteContext]
         if var u = url.flatMap({ URLComponents(string: $0) }), ["http", "https"].contains(u.scheme) {
             u.user = nil
@@ -1004,7 +1014,7 @@ extension Comment {
         }
         let pageTitle = isWeb ? (anchor["dom"] as? [String: Any])?["page_title"] as? String : anchor("window_title")
         if let pageTitle, !pageTitle.isEmpty { source["page_title"] = String(pageTitle.prefix(255)) }
-        return ["title": title, "body": noteBody, "kind": "annotation", "source": source, "metafields": fields]
+        return ["title": noteTitle, "body": noteBody, "kind": "annotation", "source": source, "metafields": fields]
     }
 
     /// The note's Markdown. Replies are the note's comments; only those from before Rome had them stay in the body.
@@ -1021,6 +1031,7 @@ extension Comment {
     var fields: [String: String] {
         var m = ["annot.id": id, "annot.author": author, "annot.text": text, "annot.created": ISO.string(createdAt),
                  "os": "macOS " + ProcessInfo.processInfo.operatingSystemVersionString]
+        m["annot.title"] = title
         m["annot.anchor"] = anchorField
         m["annot.details"] = details
         if let u = url.flatMap({ URLComponents(string: $0) }), ["http", "https"].contains(u.scheme) {

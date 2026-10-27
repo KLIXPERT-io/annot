@@ -244,11 +244,11 @@ final class NativeCapture {
     }
 
     private func openComposer(for t: AXTarget, in view: CaptureView) {
-        let pad: CGFloat = 24, size = CGSize(width: 360 + pad * 2, height: 380 + pad * 2) // room for the @ list
+        let pad: CGFloat = 24, size = CGSize(width: 360 + pad * 2, height: 420 + pad * 2) // room for the title and the @ list
         let pick = Tickets.choices.pick(for: ProjectChoices.place(url: t.url, bundleID: t.bundleID))
         let host = FirstClickHostingView(rootView: NativeComposer(author: Settings.authorName, context: t.summary, projects: Tickets.choices.all,
                                                                   project: pick.project, why: pick.why,
-                                                                  onSubmit: { [weak self] in self?.submit($0, annotate: $1, project: $2) }))
+                                                                  onSubmit: { [weak self] in self?.submit($0, title: $1, annotate: $2, project: $3) }))
         guard let window = view.window else { return }
         let local = window.convertFromScreen(CGRect(origin: CGPoint(x: click.x, y: Self.primaryHeight - click.y), size: .zero)).origin
         var origin = CGPoint(x: local.x - pad, y: local.y + 32 + pad - size.height) // pin's bottom-left corner on the click
@@ -260,7 +260,7 @@ final class NativeCapture {
         window.makeKey()
     }
 
-    private func submit(_ text: String, annotate: Bool, project: String?) {
+    private func submit(_ text: String, title: String, annotate: Bool, project: String?) {
         guard let t = target else { return }
         let click = self.click
         finish()
@@ -271,7 +271,7 @@ final class NativeCapture {
             "frame": ["x": t.frame.minX, "y": t.frame.minY, "w": t.frame.width, "h": t.frame.height],
         ]
         if !t.url.isEmpty { anchor["url"] = t.url }
-        let comment = CommentStore.shared.create(text: text, anchor: anchor)
+        let comment = CommentStore.shared.create(text: text, title: title, anchor: anchor)
         if !Tickets.choices.all.isEmpty { Settings.chooseProject(project, at: ProjectChoices.place(url: t.url, bundleID: t.bundleID)) }
         HUD.show(project.map { "Comment saved · \($0) Triage" } ?? "Comment saved")
         Task.detached {
@@ -387,17 +387,30 @@ struct NativeComposer: View {
     let projects: [Tickets.Project] // empty: not connected, no picker
     @State var project: String? // nil keeps the comment on this Mac
     @State var why: String? // why it's this project ("last used in this app"); nil for the default or once changed
-    let onSubmit: (String, Bool, String?) -> Void // text, draw on the screenshot, project
+    let onSubmit: (String, String, Bool, String?) -> Void // text, title, draw on the screenshot, project
     @State private var text = ""
+    @State private var title = ""
     @State private var mention = MentionState()
     @FocusState private var focused: Bool
 
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// A title for Triage once the first line gets too long to be one; stays while it has one.
+    private var asksTitle: Bool {
+        !projects.isEmpty && (!title.isEmpty || (text.split(whereSeparator: \.isNewline).first?.count ?? 0) > Comment.titleAfter)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             PinBubble(name: author)
             VStack(alignment: .leading, spacing: 0) {
+                if asksTitle {
+                    TextField("Add a title", text: $title)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13, weight: .semibold))
+                        .onSubmit { send() }
+                        .padding(.leading, 44).padding(.trailing, 12).padding(.top, 10)
+                        .help("The title in Triage; without one it's the comment's first line")
+                }
                 HStack(alignment: .top, spacing: 8) {
                     Avatar(name: author)
                     TextField("Add a comment", text: $text, axis: .vertical)
@@ -445,7 +458,7 @@ struct NativeComposer: View {
                 if !projects.isEmpty {
                     Divider()
                     HStack(spacing: 6) {
-                        Text("Send to").foregroundStyle(.secondary)
+                        Text("Send to").foregroundStyle(.secondary).fixedSize()
                         Menu {
                             Button("Keep on this Mac") { project = nil; why = nil }
                             Divider()
@@ -475,7 +488,7 @@ struct NativeComposer: View {
 
     private func send(annotate: Bool = false) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !t.isEmpty { onSubmit(t, annotate, project) }
+        if !t.isEmpty { onSubmit(t, title.trimmingCharacters(in: .whitespacesAndNewlines), annotate, project) }
     }
 
     private func complete(_ p: Tickets.Person) {

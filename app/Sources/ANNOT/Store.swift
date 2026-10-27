@@ -13,6 +13,7 @@ struct Comment: Identifiable {
     var tempId: String?
     var author: String
     var text: String
+    var title = "" // the note's title in Triage; empty: the text's first line
     var details = "" // longer description added after posting
     var status: String // open | resolved
     var createdAt: Date
@@ -74,6 +75,7 @@ struct Comment: Identifiable {
         d["annotations"] = annotations.isEmpty ? nil : annotations
         d["annotated_screenshot_path"] = annotatedScreenshot
         d["ticket"] = ticket?.dict
+        d["title"] = title.isEmpty ? nil : title
         d["details"] = details.isEmpty ? nil : details
         d["remote"] = remote ? true : nil
         return d
@@ -91,6 +93,7 @@ struct Comment: Identifiable {
                   screenshot: d["screenshot_path"] as? String, annotations: d["annotations"] as? [[String: Any]] ?? [],
                   annotatedScreenshot: d["annotated_screenshot_path"] as? String, replies: replies,
                   ticket: TicketLink(dict: d["ticket"] as? [String: Any]))
+        title = d["title"] as? String ?? ""
         details = d["details"] as? String ?? ""
         remote = d["remote"] as? Bool ?? false
     }
@@ -147,11 +150,12 @@ final class CommentStore: ObservableObject, @unchecked Sendable {
     // MARK: writes
 
     @discardableResult
-    func create(text: String, anchor: [String: Any], tempId: String? = nil) -> Comment {
+    func create(text: String, title: String = "", anchor: [String: Any], tempId: String? = nil) -> Comment {
         let project = (anchor["url"] as? String).flatMap { URL(string: $0)?.host } ?? anchor["bundle_id"] as? String
-        let c = Comment(id: "cmt_" + String(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(16)),
+        var c = Comment(id: "cmt_" + String(UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "").prefix(16)),
                         tempId: tempId, author: Settings.authorName, text: text, status: "open", createdAt: Date(),
                         projectID: project, anchor: anchor)
+        c.title = title
         lock.withLock {
             items[c.id] = c
             save(c)

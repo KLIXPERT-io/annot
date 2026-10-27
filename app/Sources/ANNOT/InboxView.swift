@@ -25,7 +25,7 @@ struct InboxView: View {
             default: if c.ticket?.project != projectFilter { return false }
             }
             guard !query.isEmpty else { return true }
-            return [c.text, c.details, c.author, c.place].contains { $0.localizedCaseInsensitiveContains(query) }
+            return [c.title, c.text, c.details, c.author, c.place].contains { $0.localizedCaseInsensitiveContains(query) }
                 || c.replies.contains { $0.text.localizedCaseInsensitiveContains(query) }
         }
     }
@@ -186,7 +186,10 @@ private struct CommentRow: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                Text(comment.text).font(.system(size: 12)).lineLimit(2)
+                if !comment.title.isEmpty {
+                    Text(comment.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                }
+                Text(comment.text).font(.system(size: 12)).lineLimit(comment.title.isEmpty ? 2 : 1)
                 HStack(spacing: 4) {
                     Image(systemName: comment.isWeb ? "globe" : "macwindow")
                     Text(comment.place).lineLimit(1).truncationMode(.middle)

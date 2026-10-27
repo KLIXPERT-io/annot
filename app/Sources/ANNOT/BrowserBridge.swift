@@ -128,7 +128,7 @@ final class BrowserBridge: @unchecked Sendable {
     private func create(_ e: [String: Any], from browser: Browser) {
         guard let text = e["text"] as? String, var anchor = e["anchor"] as? [String: Any] else { return }
         anchor["browser"] = browser.bundleID
-        let comment = CommentStore.shared.create(text: text, anchor: anchor, tempId: e["tempId"] as? String)
+        let comment = CommentStore.shared.create(text: text, title: e["title"] as? String ?? "", anchor: anchor, tempId: e["tempId"] as? String)
         // The comment box's pick (null: keep local); no picker shown means the default.
         let project = e.keys.contains("project") ? e["project"] as? String : Settings.ticketsProjectKey
         if e.keys.contains("project") { Settings.chooseProject(project, at: ProjectChoices.place(url: anchor["url"] as? String)) }
