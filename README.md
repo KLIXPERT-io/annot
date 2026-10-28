@@ -1,6 +1,8 @@
-# ANNOT (PoC)
+# ANNOT
 
 **Double-tap ⌥** (or press ⌥⌘O) anywhere on your Mac, click what you mean, type. Figma-style comments, saved locally with the page URL, the element and a screenshot. You'll find them all under **Comments…** in the menu bar.
+
+![Pins on a web page, one thread open with replies from a teammate and an agent](docs/screenshots/thread.png)
 
 - **In Chrome, Arc and Safari:** pins and threads right on the page. Hover a pin to preview, click to open the thread, reply, resolve.
 - **Anywhere else:** comment mode highlights the element under the mouse (Accessibility), click to drop a pin, type. Saves app, window and AX element (plus a cropped screenshot if enabled).
@@ -8,6 +10,12 @@
 - **Screenshot to the clipboard (⌥⇧⌘4):** the screens freeze; drag over an area or click a window. The editor below opens on it: draw, say what it shows (printed under the image), **Copy** (⌘C). ANNOT goes back to the app you were in, so ⌘V pastes it. Nothing is saved or sent.
 - **Annotate screenshots:** click a screenshot in the Comments window (or **Annotate**) to draw arrows, boxes, text and freehand lines, each with a label. The original is kept; the drawing is saved next to it and can be edited again.
 - **Comments window (⌘K from the menu):** every comment with screenshot, thread and context. Filter Open / Resolved / All, search, reply, resolve, reopen the page in the browser it came from, copy as Markdown or JSON for an agent, delete.
+
+![Comment mode: the clicked element is highlighted and the comment box picks the project for the site](docs/screenshots/compose.png)
+
+![The Comments window: every comment with its screenshot, thread, Triage state and the element's details](docs/screenshots/comments.png)
+
+![Drawing a box and an arrow on a comment's screenshot](docs/screenshots/annotate.png)
 
 ## Install
 
@@ -121,7 +129,7 @@ The overlay never touches the network or the disk. It only exchanges events with
 
 More Chromium browsers with Chrome's AppleScript dictionary (Brave, Edge, Vivaldi) are one line each in `Browser.all` (`BrowserBridge.swift`).
 
-## PoC limits
+## Limits
 
 - **Shared pins need Rome:** comments kept on this Mac (no project) aren't shared, and comments sent before metafields existed are shared only once their author's ANNOT has run this version.
 - **Open tabs keep the old overlay** until reloaded, so element details only appear in tabs loaded after an update.
