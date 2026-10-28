@@ -357,12 +357,13 @@ final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-private struct HintPill: View {
+struct HintPill: View {
     let text: String
+    var icon = "bubble.left"
     let cancel: () -> Void
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: "bubble.left")
+            Image(systemName: icon)
             Text(text)
             Button(action: cancel) {
                 Text("Cancel  esc").font(.system(size: 11)).padding(.horizontal, 6).padding(.vertical, 1)
@@ -370,7 +371,7 @@ private struct HintPill: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("Leave comment mode (Esc or right-click)")
+            .help("Cancel (Esc or right-click)")
         }
         .font(.system(size: 12, weight: .medium)).foregroundStyle(.white)
         .padding(.horizontal, 14).padding(.vertical, 8)

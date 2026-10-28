@@ -214,7 +214,17 @@ private struct GeneralSettings: View {
                     Text("Double-tap ⌥ to comment")
                     Text("Tap Option twice quickly. Needs Accessibility")
                 }
-                LabeledContent("Shortcut") { ShortcutRecorder(combo: $settings.hotKey) }
+                LabeledContent("Shortcut") { ShortcutRecorder(combo: $settings.hotKey, taken: settings.snipHotKey) }
+            }
+            Section {
+                LabeledContent {
+                    ShortcutRecorder(combo: $settings.snipHotKey, taken: settings.hotKey)
+                } label: {
+                    Text("Shortcut")
+                    Text("Drag over an area, draw on it, say what it shows, copy")
+                }
+            } header: {
+                Text("Screenshot to clipboard")
             }
             Section {
                 Toggle(isOn: Binding(get: { login == .enabled || login == .requiresApproval }, set: setLogin)) {
@@ -271,7 +281,7 @@ private struct PermissionsSettings: View {
                 PermissionRow(title: "Accessibility", detail: "Identify the element you click in any app", ok: ax,
                               action: "Grant", perform: Permissions.requestAccessibility)
                 PermissionRow(title: "Screenshots (optional)",
-                              detail: screen ? "A cropped screenshot is saved with each comment"
+                              detail: screen ? "A cropped screenshot is saved with each comment, and \(Settings.shared.snipHotKey.label) takes one to copy"
                                              : "Off. macOS lists this as “Screen & System Audio Recording”; no audio is recorded",
                               ok: screen ? true : nil, action: "Turn On", perform: Permissions.requestScreenRecording)
             } footer: {
@@ -356,6 +366,7 @@ private struct PermissionRow: View {
 
 private struct ShortcutRecorder: View {
     @Binding var combo: HotKeyCombo
+    var taken: HotKeyCombo? // the other shortcut: one combo can't do both
     @State private var recording = false
     @State private var monitor: Any?
 
@@ -370,7 +381,9 @@ private struct ShortcutRecorder: View {
             if e.keyCode == 53 { stop(); return nil }
             let flags = e.modifierFlags.intersection([.command, .option, .control, .shift])
             guard !flags.intersection([.command, .option, .control]).isEmpty else { NSSound.beep(); return nil }
-            combo = HotKeyCombo(code: UInt32(e.keyCode), mods: HotKey.carbonMods(flags), label: HotKey.label(flags, key: HotKey.keyName(e)))
+            let new = HotKeyCombo(code: UInt32(e.keyCode), mods: HotKey.carbonMods(flags), label: HotKey.label(flags, key: HotKey.keyName(e)))
+            guard new.code != taken?.code || new.mods != taken?.mods else { NSSound.beep(); return nil }
+            combo = new
             stop()
             return nil
         }

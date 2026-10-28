@@ -4,15 +4,17 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
-    private let hotKey = HotKey()
+    private let hotKey = HotKey(id: 1), snipKey = HotKey(id: 2)
     private let doubleTap = DoubleTap()
     private var native: NativeCapture?
+    private var snipping: SnipCapture?
     private var asking: Browser? // startCapture sent, browser hasn't answered yet
     private var cancelAsk = false
     private var settingsWindow: SettingsWindowController?
     private var setupWindow: SetupWindowController?
     private var bag = Set<AnyCancellable>()
     private let commentItem = NSMenuItem(title: "Add Comment", action: #selector(commentMode), keyEquivalent: "")
+    private let snipItem = NSMenuItem(title: "Take Screenshot", action: #selector(snip), keyEquivalent: "")
     private let projectItem = NSMenuItem(title: "Default Project", action: nil, keyEquivalent: "") // submenu, filled on open
     private lazy var connectItem = item("Connect to Rome…", #selector(connectRome))
     private var commentsWindow: NSWindow?
@@ -29,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         commentItem.target = self
         menu.addItem(commentItem)
+        snipItem.target = self
+        menu.addItem(snipItem)
         projectItem.submenu = NSMenu()
         menu.addItem(projectItem)
         menu.addItem(connectItem)
@@ -50,7 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.menu = menu
         NSApp.mainMenu = Self.editMenu()
 
-        HotKey.onPress = { [weak self] in self?.commentMode() }
+        hotKey.onPress = { [weak self] in self?.commentMode() }
+        snipKey.onPress = { [weak self] in self?.snip() }
         DoubleTap.onPress = { [weak self] in self?.commentMode() }
         Settings.shared.$hotKey
             .combineLatest(Settings.shared.$doubleTapOption)
@@ -59,6 +64,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.hotKey.register(combo)
                 if tap { self.doubleTap.start() } else { self.doubleTap.stop() }
                 self.commentItem.title = "Add Comment    " + (tap ? "⌥⌥ or " : "") + combo.label
+            }
+            .store(in: &bag)
+        Settings.shared.$snipHotKey
+            .sink { [weak self] combo in
+                self?.snipKey.register(combo)
+                self?.snipItem.title = "Take Screenshot    " + combo.label
             }
             .store(in: &bag)
 
@@ -99,6 +110,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             startNative()
         }
+    }
+
+    /// Screenshot to the clipboard: pick an area, draw on it, copy. Pressed again while picking: cancel.
+    @objc func snip() {
+        if let snipping { snipping.finish(); return }
+        native?.finish()
+        guard Screenshot.enabled else {
+            HUD.show("Screenshots are off: turn them on in Settings › Permissions", isError: true, seconds: 4)
+            settings(.permissions)
+            return
+        }
+        let capture = SnipCapture()
+        capture.onFinish = { [weak self] in self?.snipping = nil }
+        snipping = capture
+        capture.start()
     }
 
     private func startWeb(in browser: Browser) {

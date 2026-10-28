@@ -5,6 +5,7 @@
 - **In Chrome, Arc and Safari:** pins and threads right on the page. Hover a pin to preview, click to open the thread, reply, resolve.
 - **Anywhere else:** comment mode highlights the element under the mouse (Accessibility), click to drop a pin, type. Saves app, window and AX element (plus a cropped screenshot if enabled).
 - **For developers:** web comments store the element itself: id, classes, `data-*`/`aria-*` attributes, an HTML snippet, the DOM path, CSS selector, size, font and colors. **Copy for Developer** puts all of it, plus the screenshot path, on the clipboard as Markdown.
+- **Screenshot to the clipboard (⌥⇧⌘4):** the screens freeze; drag over an area or click a window. The editor below opens on it: draw, say what it shows (printed under the image), **Copy** (⌘C). ANNOT goes back to the app you were in, so ⌘V pastes it. Nothing is saved or sent.
 - **Annotate screenshots:** click a screenshot in the Comments window (or **Annotate**) to draw arrows, boxes, text and freehand lines, each with a label. The original is kept; the drawing is saved next to it and can be edited again.
 - **Comments window (⌘K from the menu):** every comment with screenshot, thread and context. Filter Open / Resolved / All, search, reply, resolve, reopen the page in the browser it came from, copy as Markdown or JSON for an agent, delete.
 
@@ -29,14 +30,14 @@ make logs                          # what the browser bridge does
 
 To always sign with the same certificate, put `CODESIGN_IDENTITY="…"` in `signing.env` next to `build.sh` (git-ignored).
 
-On first launch a setup guide walks through each permission below, one step at a time: a picture of where to turn it on (in German when macOS is), a live check that turns green, and a last step to restart the browsers. It opens again from **Setup Guide…** in the menu or **Settings › Permissions**. **Settings…** (⌘, in the menu) has three tabs: **General** (name, shortcuts, **Open at login**, where comments are stored), **Account** (Rome, see below) and **Permissions**:
+On first launch a setup guide walks through each permission below, one step at a time: a picture of where to turn it on (in German when macOS is), a live check that turns green, and a last step to restart the browsers. It opens again from **Setup Guide…** in the menu or **Settings › Permissions**. **Settings…** (⌘, in the menu) has three tabs: **General** (name, comment and screenshot shortcuts, **Open at login**, where comments are stored), **Account** (Rome, see below) and **Permissions**:
 
 | Permission | Why |
 | --- | --- |
 | Accessibility | identify the element you click in other apps |
 | Automation → Chrome / Arc / Safari | talk to the active tab (macOS asks once per browser) |
 | **Allow JavaScript from Apple Events** in each browser | Chrome: View › Developer (German UI: Darstellung › Entwickler › *JavaScript von Apple Events zulassen*), per profile. Arc: its own setting of the same name. Safari: Settings › Advanced › *Show features for web developers*, then Settings › Developer |
-| Screenshots *(optional)* | off by default and never prompted for by itself; turn on in Settings. macOS calls this “Screen & System Audio Recording”; no audio is recorded |
+| Screenshots *(optional)* | for comments and ⌥⇧⌘4; off by default and never prompted for by itself; turn on in Settings. macOS calls this “Screen & System Audio Recording”; no audio is recorded |
 
 The icon is `app/AppIcon.icon`, an Icon Composer document (Xcode 26: open it in Icon Composer to edit). `build.sh` compiles it with `actool`: Liquid Glass on macOS 26, a flat icon on 14 and 15.
 
@@ -80,6 +81,8 @@ Rome's changes arrive live over the WebSocket (`wss://…/ws`, subprotocol `rome
 | Enter / ⇧Enter | post / new line |
 | ⌘Enter or the pen button | post and draw on the screenshot |
 | Esc | cancel or close the thread |
+| ⌥⇧⌘4 | screenshot to the clipboard: drag an area or click a window (Esc, right-click or the shortcut again cancels). Configurable in Settings |
+| ⌘C or ↩ in the description | copy the screenshot with drawing and description, and go back |
 
 ## Where comments live
 
@@ -108,6 +111,7 @@ Mac app (Swift, menu bar)                     Browser tab
  │    poll: 1 Apple Event / 2 s idle, 0.3 s busy
  ├─ NativeCapture (AX hit test + SwiftUI composer)
  ├─ Screenshot (ScreenCaptureKit, cropped)
+ ├─ SnipCapture (frozen screens → area → annotator → clipboard)
  ├─ CommentStore (SQLite) ── changes refresh the open tab
  ├─ InboxView (Comments window)
  └─ Updater (Sparkle, GitHub releases)

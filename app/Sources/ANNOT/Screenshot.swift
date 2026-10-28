@@ -43,6 +43,26 @@ enum Screenshot {
         }
     }
 
+    /// Every display as it is right now, full resolution, with its frame (global, top-left origin). ANNOT's windows
+    /// are in it (the Comments window can be snipped too), its panels and HUD aren't.
+    static func displays() async -> [(id: CGDirectDisplayID, frame: CGRect, image: CGImage)] {
+        guard enabled, let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true) else { return [] }
+        let panels = content.windows.filter { $0.owningApplication?.processID == getpid() && $0.windowLayer != 0 }
+        var out: [(id: CGDirectDisplayID, frame: CGRect, image: CGImage)] = []
+        for display in content.displays {
+            let filter = SCContentFilter(display: display, excludingWindows: panels)
+            let frame = CGDisplayBounds(display.displayID), scale = CGFloat(filter.pointPixelScale)
+            let cfg = SCStreamConfiguration()
+            cfg.width = Int(frame.width * scale)
+            cfg.height = Int(frame.height * scale)
+            cfg.showsCursor = false
+            if let image = try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg) {
+                out.append((display.displayID, frame, image))
+            }
+        }
+        return out
+    }
+
     /// Element padded a little and grown to at least 560×320 around the click, so agents see the surroundings.
     static func contextRect(_ el: CGRect, click: CGPoint, bounds: CGRect) -> CGRect {
         let minW: CGFloat = 560, minH: CGFloat = 320

@@ -1,24 +1,36 @@
 import AppKit
 import Carbon.HIToolbox
 
-/// Global hotkey via Carbon (APP-1). Needs no Accessibility permission.
+/// Global hotkey via Carbon (APP-1). Needs no Accessibility permission. One per shortcut, told apart by `id`.
 final class HotKey {
-    static var onPress: (() -> Void)?
+    private static var actions: [UInt32: () -> Void] = [:]
     private static var handlerInstalled = false
+    private let id: UInt32
     private var ref: EventHotKeyRef?
+
+    var onPress: (() -> Void)? {
+        get { Self.actions[id] }
+        set { Self.actions[id] = newValue }
+    }
+
+    init(id: UInt32) { self.id = id }
 
     func register(_ combo: HotKeyCombo) {
         unregister()
         if !Self.handlerInstalled {
             var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-            InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in
-                DispatchQueue.main.async { HotKey.onPress?() }
+            InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+                var key = EventHotKeyID()
+                GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                                  MemoryLayout<EventHotKeyID>.size, nil, &key)
+                let id = key.id
+                DispatchQueue.main.async { HotKey.actions[id]?() }
                 return noErr
             }, 1, &spec, nil, nil)
             Self.handlerInstalled = true
         }
-        let id = EventHotKeyID(signature: OSType(0x414E_4E54), id: 1) // 'ANNT'
-        RegisterEventHotKey(combo.code, combo.mods, id, GetApplicationEventTarget(), 0, &ref)
+        let key = EventHotKeyID(signature: OSType(0x414E_4E54), id: id) // 'ANNT'
+        RegisterEventHotKey(combo.code, combo.mods, key, GetApplicationEventTarget(), 0, &ref)
     }
 
     func unregister() {

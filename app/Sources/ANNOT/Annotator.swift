@@ -46,8 +46,9 @@ extension Color {
 
 /// Draws marks. Shared by the editor and the PNG export, so the saved image looks like what you drew.
 enum MarkPainter {
-    /// Strokes and labels grow with the screenshot, so they read the same on 1× and 2× captures.
-    static func unit(_ pixels: CGSize) -> CGFloat { max(1, min(pixels.width, pixels.height) / 320) }
+    /// Strokes and labels grow with the screenshot, so they read the same on 1× and 2× captures. `scale` (pixels per
+    /// point, when known) keeps them from getting thinner than on screen in a small capture.
+    static func unit(_ pixels: CGSize, scale: CGFloat = 1) -> CGFloat { max(scale, min(pixels.width, pixels.height) / 320) }
 
     /// `scale`: image pixels → canvas points.
     static func draw(_ marks: [Mark], in ctx: GraphicsContext, scale s: CGFloat, unit: CGFloat, bounds: CGRect) {
@@ -110,15 +111,28 @@ enum MarkPainter {
         c.draw(text, in: box.insetBy(dx: pad.width, dy: pad.height))
     }
 
-    /// The screenshot with the marks baked in, at full resolution.
+    /// The screenshot with the marks baked in, at full resolution, and the caption under it if there is one.
     @MainActor
-    static func render(_ marks: [Mark], on image: NSImage, pixels: CGSize) -> Data? {
-        let u = unit(pixels)
-        let view = ZStack {
-            Image(nsImage: image).resizable()
-            Canvas { ctx, size in draw(marks, in: ctx, scale: 1, unit: u, bounds: CGRect(origin: .zero, size: size)) }
+    static func render(_ marks: [Mark], on image: NSImage, pixels: CGSize, scale: CGFloat = 1, caption: String = "") -> Data? {
+        let u = unit(pixels, scale: scale)
+        let view = VStack(spacing: 0) {
+            ZStack {
+                Image(nsImage: image).resizable()
+                Canvas { ctx, size in draw(marks, in: ctx, scale: 1, unit: u, bounds: CGRect(origin: .zero, size: size)) }
+            }
+            .frame(width: pixels.width, height: pixels.height)
+            if !caption.isEmpty {
+                Text(caption)
+                    .font(.system(size: 13 * u))
+                    .foregroundColor(.black)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12 * u).padding(.vertical, 9 * u)
+                    .background(Color(white: 0.96))
+                    .overlay(alignment: .top) { Rectangle().fill(Color(white: 0.82)).frame(height: max(1, u / 2)) } // apart from a white page
+            }
         }
-        .frame(width: pixels.width, height: pixels.height)
+        .frame(width: pixels.width)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 1
         return renderer.cgImage.flatMap(Screenshot.png)
@@ -167,7 +181,7 @@ final class Annotator: NSObject, NSWindowDelegate {
         window.delegate = self
         window.contentView = NSHostingView(rootView: AnnotatorView(
             image: image, pixels: pixels, marks: Mark.decode(comment.annotations),
-            onSave: { [weak self] marks in
+            onSave: { [weak self] marks, _ in
                 let png = marks.isEmpty ? nil : MarkPainter.render(marks, on: image, pixels: pixels)
                 CommentStore.shared.setAnnotations(Mark.encode(marks), png: png, for: id)
                 Thumbs.forget(CommentStore.annotatedURL(id).path)
@@ -182,10 +196,21 @@ final class Annotator: NSObject, NSWindowDelegate {
 }
 
 struct AnnotatorView: View {
+    /// The main button: Save for a comment's screenshot, Copy for a snip.
+    enum Action {
+        case save, copy
+        var title: String { self == .save ? "Save" : "Copy" }
+        var key: KeyEquivalent { self == .save ? "s" : "c" }
+        var help: String { self == .save ? "Save  ⌘S" : "Copy to the clipboard  ⌘C" }
+    }
+
     let image: NSImage
     let pixels: CGSize
+    var scale: CGFloat = 1 // image pixels per point, when known (see `MarkPainter.unit`)
     @State var marks: [Mark]
-    let onSave: ([Mark]) -> Void
+    @State var caption: String? = nil // what the screenshot shows, printed under it; nil: no field for it
+    var action = Action.save
+    let onSave: ([Mark], String) -> Void // marks, caption
     let onCancel: () -> Void
 
     @State private var tool = Mark.Kind.arrow
@@ -208,12 +233,12 @@ struct AnnotatorView: View {
             toolbar.padding(.horizontal, 12).padding(.vertical, 8)
             Divider()
             GeometryReader { geo in
-                let s = min(geo.size.width / pixels.width, geo.size.height / pixels.height)
+                let s = min(geo.size.width / pixels.width, geo.size.height / pixels.height, 2 / scale) // a small snip: twice its size at most
                 let size = CGSize(width: pixels.width * s, height: pixels.height * s)
                 ZStack {
                     Image(nsImage: image).resizable()
                     Canvas { ctx, sz in
-                        MarkPainter.draw(shown, in: ctx, scale: s, unit: MarkPainter.unit(pixels), bounds: CGRect(origin: .zero, size: sz))
+                        MarkPainter.draw(shown, in: ctx, scale: s, unit: MarkPainter.unit(pixels, scale: scale), bounds: CGRect(origin: .zero, size: sz))
                     }
                 }
                 .frame(width: size.width, height: size.height)
@@ -226,6 +251,10 @@ struct AnnotatorView: View {
             .padding(20)
             .background(Color.secondary.opacity(0.08))
             .overlay(alignment: .bottom) { if editing != nil { labelBar } }
+            if caption != nil {
+                Divider()
+                captionBar
+            }
         }
         .frame(minWidth: 640, minHeight: 420)
         .onChange(of: color) { _, c in if let i = editing, marks.indices.contains(i) { marks[i].color = c } }
@@ -265,11 +294,39 @@ struct AnnotatorView: View {
             Spacer()
             Text(tool.hint).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
             Button("Cancel", action: onCancel)
-            Button("Save") { commitLabel(); onSave(marks) }
-                .keyboardShortcut("s")
+            Button(action.title, action: done)
+                .keyboardShortcut(action.key)
                 .buttonStyle(.borderedProminent)
-                .help("Save  ⌘S")
+                .help(action.help)
         }
+    }
+
+    private var captionBar: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "text.below.photo").foregroundStyle(.secondary)
+            TextField("What does it show? Optional, goes under the image", text: Binding(get: { caption ?? "" }, set: { caption = $0 }),
+                      axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...4)
+                .onSubmit(done)
+        }
+        .font(.system(size: 13))
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private func done() {
+        if action == .copy, copySelectedText() { return }
+        commitLabel()
+        onSave(marks, caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")
+    }
+
+    /// ⌘C with text selected in a field copies that text, not the image.
+    private func copySelectedText() -> Bool {
+        guard let e = NSApp.currentEvent, e.type == .keyDown, e.charactersIgnoringModifiers == "c",
+              let field = NSApp.keyWindow?.firstResponder as? NSTextView,
+              field.selectedRange().length > 0 else { return false }
+        field.copy(nil)
+        return true
     }
 
     private var labelBar: some View {

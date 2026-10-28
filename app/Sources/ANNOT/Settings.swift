@@ -7,6 +7,7 @@ struct HotKeyCombo: Codable, Equatable {
     var label: String
 
     static let `default` = HotKeyCombo(code: UInt32(kVK_ANSI_O), mods: UInt32(cmdKey | optionKey), label: "⌥⌘O")
+    static let snip = HotKeyCombo(code: UInt32(kVK_ANSI_4), mods: UInt32(cmdKey | optionKey | shiftKey), label: "⌥⇧⌘4") // macOS's ⇧⌘4, plus ⌥
 }
 
 /// User settings, persisted in UserDefaults. The static accessors are safe to read from any thread.
@@ -18,6 +19,10 @@ final class Settings: ObservableObject {
     @Published var onboarded: Bool { didSet { Self.d.set(onboarded, forKey: "onboarded") } }
     @Published var hotKey: HotKeyCombo {
         didSet { Self.d.set(try? JSONEncoder().encode(hotKey), forKey: "hotKey") }
+    }
+    /// Screenshot to the clipboard (see `SnipCapture`).
+    @Published var snipHotKey: HotKeyCombo {
+        didSet { Self.d.set(try? JSONEncoder().encode(snipHotKey), forKey: "snipHotKey") }
     }
     @Published var doubleTapOption: Bool { didSet { Self.d.set(doubleTapOption, forKey: "doubleTapOption") } }
     /// The Rome server, e.g. https://rome.example.com; "" until connected. Read it as `Rome.server`.
@@ -36,6 +41,7 @@ final class Settings: ObservableObject {
         romeServer = Self.d.string(forKey: "romeServer") ?? ""
         ticketsProject = Self.d.string(forKey: "ticketsProject")
         hotKey = Self.d.data(forKey: "hotKey").flatMap { try? JSONDecoder().decode(HotKeyCombo.self, from: $0) } ?? .default
+        snipHotKey = Self.d.data(forKey: "snipHotKey").flatMap { try? JSONDecoder().decode(HotKeyCombo.self, from: $0) } ?? .snip
     }
 
     /// The project new comments go to, from any thread.
